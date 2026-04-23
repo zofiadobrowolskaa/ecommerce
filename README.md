@@ -1,93 +1,34 @@
-# project-z-dobrowolska-993-30f8
+# Projekt
 
-Project execution for z.dobrowolska.993@studms.ug.edu.pl
+<p class="editor-paragraph mb-2" dir="ltr"><span style="white-space: pre-wrap;">System serwerowy dla punktu zamówień (kiosk): katalog pozycji z wariantami i modyfikatorami, koszyk sesyjny, naliczanie cen, składanie zamówienia i potwierdzenie płatności (symulacja lub status). PostgreSQL: transakcyjna spójność stanów magazynowych, zamówień i pozycji. MongoDB: szkice konfiguracji koszyka, zdarzenia telemetryczne kroku składania (dla analityki i audytu UX po stronie serwera). Bez oceny interfejsu dotykowego — tylko API i modele danych.</span></p>
 
-## Getting started
+## Opis Wyzwania
+<h2 class="editor-heading-h2 text-2xl font-semibold mb-3" dir="ltr" style="text-align: start;"><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">Repozytorium i wybór tematu</strong></b><span style="white-space: pre-wrap;">&nbsp;</span></h2><p class="editor-paragraph mb-2" dir="ltr" style="text-align: start;"><span style="white-space: pre-wrap;">Cały proces został przeniesiony na platformę&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">GitLab</strong></b><span style="white-space: pre-wrap;">. Repozytorium tworzy się automatycznie po kliknięciu&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">odpowiedniego przycisku</strong></b><span style="white-space: pre-wrap;">. Proszę pamiętać, że pełna lista wymagań pojawi się dopiero po&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">wybraniu konkretnego tematu</strong></b><span style="white-space: pre-wrap;">&nbsp;w systemie.</span></p><h2 class="editor-heading-h2 text-2xl font-semibold mb-3" dir="ltr" style="text-align: start;"><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">Terminy</strong></b><span style="white-space: pre-wrap;">&nbsp;</span></h2><p class="editor-paragraph mb-2" dir="ltr" style="text-align: start;"><span style="white-space: pre-wrap;">Termin oddania prac upływa&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">01.06.2026 r.</strong></b><span style="white-space: pre-wrap;">&nbsp;Jest to data graniczna pozwalająca na uzyskanie 100% punktów. W przypadku spóźnień będą naliczane kary procentowe za każdy dzień zwłoki (szczegółowe zasady u prowadzących grupy).</span></p><h2 class="editor-heading-h2 text-2xl font-semibold mb-3" dir="ltr" style="text-align: start;"><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">Zakres oceny</strong></b><span style="white-space: pre-wrap;">&nbsp;</span></h2><p class="editor-paragraph mb-2" dir="ltr" style="text-align: start;"><span style="white-space: pre-wrap;">Ocenie podlega wyłącznie część serwerowa oraz baza danych. Warstwa kliencka jest dowolna – do prezentacji działania projektu można wykorzystać prosty frontend lub po prostu kolekcję w programie Postman.</span></p><h2 class="editor-heading-h2 text-2xl font-semibold mb-3" dir="ltr" style="text-align: start;"><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">Punktacja</strong></b><span style="white-space: pre-wrap;">&nbsp;</span></h2><p class="editor-paragraph mb-2" dir="ltr" style="text-align: start;"><span style="white-space: pre-wrap;">Struktura oceny pozwala na uzyskanie łącznie 115% punktów:</span></p><ul class="editor-list-ul list-disc pl-6 mb-2"><li value="1" dir="ltr"><span style="white-space: pre-wrap;">Wymagania techniczne (T1–T8):&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">60%</strong></b></li><li value="2" dir="ltr"><span style="white-space: pre-wrap;">Wymagania dodatkowe:&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">15%</strong></b></li><li value="3" dir="ltr"><span style="white-space: pre-wrap;">Wymagania funkcjonalne (zależne od tematu):&nbsp;</span><b><strong class="editor-text-bold font-bold" style="white-space: pre-wrap;">40%</strong></b></li></ul>
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Kryteria Oceny
+Całkowita liczba punktów: 26
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+| Wymaganie | Opis | Waga |
+|-----------|------|------|
+| Wymaganie | Pula połączeń singleton, zapytania parametryzowane ($1, $2), mapowanie kodów PostgreSQL (np. 23505, 23503) na HTTP. | 7% |
+| Wymaganie | Schemat wyłącznie przez migracje (min. 2 addytywne), seedy domenowe, min. 1 endpoint z dynamicznym where bez sklejania SQL z stringów. | 7% |
+| Wymaganie | Min. 2 modele z walidacją, relacje użyte w endpointach, eager loading (include), hook domenowy, transakcja zarządzana. | 7% |
+| Wymaganie | Min. 2 modele z relacjami, historia migracji (migrate deploy na czystej bazie), CRUD przez PrismaClient bez any, min. 1 $queryRaw (tagged template). | 7% |
+| Wymaganie | Singleton MongoClient, zamknięcie przy SIGINT, zasób domenowy sterownikiem natywnym, min. 3 różne operatory w realnych endpointach, indeks złożony lub tekstowy. | 6% |
+| Wymaganie | Min. 2 schematy z walidatorami niestandardowymi, subdokument lub tablica zagnieżdżona, pre hook, populate w endpoincie, methods lub statics. | 6% |
+| Wymaganie | Pipeline z $match, $group, $project i min. jednym dodatkowym stage; $lookup; pierwszy $match pod indeks; endpoint analityczny — agregacja w bazie. | 6% |
+| Wymaganie | docker compose up bez kroków ręcznych, multi-stage Dockerfile, healthchecki, depends_on service_healthy, .env.example. | 4% |
+| Wymaganie | Min. 2 serwisy Node w osobnych kontenerach, podział per silnik BD, komunikacja HTTP/broker, API Gateway, migracje/seedy z compose. | 5% |
+| Wymaganie | Min. 1 operacja zapisu do PG i Mongo z rollbackiem lub kompensacją; jednolity format błędów { error, code, details }. | 5% |
+| Wymaganie | Repozytorium zawiera README: jak uruchomić (compose), zmienne środowiskowe, podział serwisów, diagram lub opis przepływu danych PG/Mongo. | 4% |
+| Wymaganie | Publikowalna specyfikacja OpenAPI 3.x lub równoważna lista endpointów z przykładowymi żądaniami/odpowiedziami. | 4% |
+| Wymaganie | Min. zestaw testów integracyjnych lub e2e krytycznych ścieżek API (np. supertest + baza testowa). | 4% |
+| Wymaganie | Walidacja wejścia, brak wycieku stack trace do klienta, jawna obsługa błędów SQL/Mongo; krótki opis zagrożeń w README. | 3% |
+| Wymaganie | PostgreSQL: kategorie i pozycje menu; warianty rozmiaru/wersji; modyfikatory z ceną; zamówienia i order_lines ze snapshotem ceny; stany magazynowe lub limity dzienne (prosty model wystarczalny). Transakcje przy finalizacji. | 10% |
+| Wymaganie | MongoDB: dokument cart_draft (sessionId lub userId, wybrane pozycje z konfiguracją); event_log kroków (dodanie pozycji, zmiana modyfikatora, anulowanie) pod raporty i pipeline agregujący (T7). | 8% |
+| Wymaganie | Endpointy listy menu z filtrowaniem (dynamiczny where). Dodawanie/usuwanie pozycji w koszyku (serwerowy stan, nie localStorage). POST checkout z walidacją dostępności i sumy; idempotencja lub klucz żądania przy powtórzeniu (opcjonalnie). | 8% |
+| Wymaganie | Niedostępna pozycja lub przekroczony limit — 409/400 z kodem domenowym. Zmiana cennika nie wpływa na już złożone zamówienia (snapshot w liniach). Usunięcie pozycji z menu — polityka dla otwartych koszyków (jawnie opisana). | 8% |
+| Wymaganie | Finalizacja zamówienia: zapis w PG + zamknięcie/zarchiwizowanie draftu i dopisanie zdarzenia „completed” w Mongo z kompensacją przy błędzie drugiego zapisu (T8c). | 6% |
 
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab.com/ug_bazy_danych_2/25-26_project/project-z-dobrowolska-993-30f8.git
-git branch -M main
-git push -uf origin main
-```
-
-## Integrate with your tools
-
-* [Set up project integrations](https://gitlab.com/ug_bazy_danych_2/25-26_project/project-z-dobrowolska-993-30f8/-/settings/integrations)
-
-## Collaborate with your team
-
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## Zgłoszenie Rozwiązania
+Proszę zaimplementować swoje rozwiązanie w tym repozytorium. Kiedy będziesz gotowy, prześlij link do tego repozytorium na platformie Cursora (cursora.org).
