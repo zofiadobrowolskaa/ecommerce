@@ -67,13 +67,22 @@ const DashboardPage = () => {
   const salesByCategoryData = useMemo(() => {
     const dataMap = {};
     const productMap = products.reduce((map, p) => ({ ...map, [p.id]: p }), {});
+    
+    const categoryDict = {
+        1: "Rings",
+        2: "Earrings",
+        3: "Necklaces",
+        4: "Bracelets"
+    };
 
     filteredOrders.forEach(order => {
       order.items.forEach(item => {
         const product = productMap[item.productId];
         if (product) {
-          const category = product.category || 'Other';
-          dataMap[category] = (dataMap[category] || 0) + item.quantity;
+          const catId = product.category_id;
+          const categoryName = categoryDict[catId] || product.category || 'Other';
+          
+          dataMap[categoryName] = (dataMap[categoryName] || 0) + item.quantity;
         }
       });
     });

@@ -4,8 +4,8 @@ import { useAppContext } from '../../context/AppContext';
 
 const Step4Summary = ({ prevStep, formData, cartTotal, cartItems, shippingCost, discountValue }) => {
 
-  // extract placeOrder function from global context to finalize order
-  const { placeOrder } = useAppContext();
+  // dodano 'products' do destrukturyzacji kontekstu, aby wyciagnac z niego zdjecia
+  const { placeOrder, products } = useAppContext();
   const navigate = useNavigate();
   
   // local state controlling payment process state machine (idle -> processing -> success/error)
@@ -88,15 +88,25 @@ const Step4Summary = ({ prevStep, formData, cartTotal, cartItems, shippingCost, 
         <h3>Order Total</h3>
         <ul className="cart-items-summary">
           {Array.isArray(cartItems) && cartItems.length > 0 ? (
-            cartItems.map(item => (
-              <li key={`${item.productId}-${item.variantId}-${item.itemSize}`} className="cart-summary-item">
-                <img src={item.imageUrl} alt={item.name} className="cart-summary-item-image" />
-                <span className="cart-summary-item-info">
-                  {item.name} ({item.variantColor}) {item.itemSize && <span> (Size: {item.itemSize}) </span>}
-                  x {item.quantity} - ${item.totalPrice ? item.totalPrice.toFixed(2) : '0.00'}
-                </span>
-              </li>
-            ))
+            cartItems.map(item => {
+              // zabezpieczenie: szukamy pelnego produktu i wariantu bezposrednio z backendowego kontekstu
+              const product = products?.find(p => String(p.id) === String(item.productId) || p.sku === item.productId);
+              const currentVariant = product?.variants?.find(v => v.id === item.variantId) || product?.variants?.[0];
+              
+              // wybieramy obraz z wariantu, a jak nie ma, to z galerii
+              const finalImage = currentVariant?.imageUrl || product?.gallery?.[0] || item.imageUrl || '/img/placeholder.jpg';
+              const finalColor = currentVariant?.color || item.variantColor || 'Default';
+
+              return (
+                <li key={`${item.productId}-${item.variantId}-${item.itemSize}`} className="cart-summary-item">
+                  <img src={finalImage} alt={item.name} className="cart-summary-item-image" />
+                  <span className="cart-summary-item-info">
+                    {item.name} ({finalColor}) {item.itemSize && <span> (Size: {item.itemSize}) </span>}
+                    x {item.quantity} - ${item.totalPrice ? item.totalPrice.toFixed(2) : '0.00'}
+                  </span>
+                </li>
+              );
+            })
           ) : (
             <li>No items in cart</li>
           )}
