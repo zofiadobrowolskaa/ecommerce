@@ -25,6 +25,8 @@ const ProductDetailsPage = () => {
     const fetchProductDetails = async () => {
       try {
         setLoading(true);
+        setProduct(null); // NAPRAWA 1: Natychmiastowe czyszczenie starego produktu
+        
         const response = await fetch(`http://localhost:3000/api/products/${id}`);
         
         if (!response.ok) {
@@ -51,11 +53,16 @@ const ProductDetailsPage = () => {
   // sync URL variantId with state once product is loaded
   useEffect(() => {
     if (product && product.variants && product.variants.length > 0) {
+      
+      // NAPRAWA 2: Blokujemy redirect, jeśli produkt w state nie pasuje do URL (zapobiega to zacinaniu Related Products)
+      const isCorrectProductLoaded = String(product.id) === String(id) || String(product.sku) === String(id);
+      if (!isCorrectProductLoaded) return;
 
-      // ensure URL always points to valid variant (fixes /base or empty routes)
+      const productIdForUrl = product.sku || product.id;
+
       if (!variantId || variantId === 'base') {
         const defaultVariantId = product.variants[0].id;
-        navigate(`/products/${id}/${defaultVariantId}`, { replace: true });
+        navigate(`/products/${productIdForUrl}/${defaultVariantId}`, { replace: true });
         return;
       }
 
@@ -65,18 +72,15 @@ const ProductDetailsPage = () => {
         if (selectedVariantId !== variantId) {
           setSelectedVariantId(variantId);
 
-          const currentVariantFromUrl =
-            product.variants.find(v => v.id === variantId);
-
+          const currentVariantFromUrl = product.variants.find(v => v.id === variantId);
           setSelectedSize(currentVariantFromUrl?.size?.[0] || null);
           setQuantity(1);
         }
       } else {
         const defaultVariantId = product.variants[0].id;
-        navigate(`/products/${id}/${defaultVariantId}`, { replace: true });
+        navigate(`/products/${productIdForUrl}/${defaultVariantId}`, { replace: true });
       }
     }
-
   }, [id, variantId, product, navigate]);
 
   // scroll to top on product change
@@ -181,7 +185,7 @@ const ProductDetailsPage = () => {
           {/* size selector */}
           {currentVariant?.size && currentVariant.size.length > 0 && (
             <div className="options-group">
-              <label>size:</label>
+              <label>Size:</label>
               <select
                 onChange={(e) => setSelectedSize(e.target.value)}
                 value={selectedSize}

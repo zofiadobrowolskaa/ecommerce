@@ -119,7 +119,11 @@ const ProductManagementPage = () => {
                         ? `$${minPrice.toFixed(2)}` 
                         : `$${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)}`;
 
-                    const mainImg = product.variants?.[0]?.imageUrl || '/img/p000.jpg';
+                    const mainImg = product.variants?.[0]?.imageUrl || '/img/placeholder.jpg';
+                    
+                    // ZMODYFIKOWANE: Odtwarzamy tekst z liczby
+                    const categoryDict = { 1: "Rings", 2: "Earrings", 3: "Necklaces", 4: "Bracelets" };
+                    const categoryName = categoryDict[product.category_id] || product.category || 'Unknown';
 
                     return (
                         <div key={product.id} className="admin-product-item grid-layout-parent">
@@ -130,7 +134,7 @@ const ProductManagementPage = () => {
                                 <span className="id-badge">{product.id}</span>
                                 <span className="name">{product.name}</span>
                             </div>
-                            <span className="category">{product.category}</span>
+                            <span className="category">{categoryName}</span>
                             <span className="variants">
                                {variantCount} {variantCount === 1 ? 'variant' : 'variants'}
                             </span>
@@ -138,7 +142,7 @@ const ProductManagementPage = () => {
                             
                             <div className="actions">
                                 <button
-                                    onClick={() => handleEditClick(product)} 
+                                    onClick={() => toast.error("Editing disabled in server-mode.")} 
                                     className="btn-edit"
                                 >
                                     Edit
