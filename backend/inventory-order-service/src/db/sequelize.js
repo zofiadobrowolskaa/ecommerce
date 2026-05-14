@@ -36,8 +36,10 @@ const Cart = sequelize.define('Cart', {
 }, {
   // domain hooks: business rules executed automatically on every persist
   hooks: {
-    beforeSave: (cart) => {
-      // safety clamp: never allow negative totals to reach the database
+    // beforeValidate fires BEFORE validators, so we can sanitize bad input
+    // (clamp to 0) and let the min(0) validator then pass on the clean value
+    beforeValidate: (cart) => {
+      // defensive coding: silently fix negative totals instead of crashing
       if (cart.totalPrice < 0) cart.totalPrice = 0;
     }
   }
