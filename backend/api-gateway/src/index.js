@@ -46,6 +46,12 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   // extended payload: includes variants, materials, gallery
   const { name, sku, price, category_id, long_description, specs, variants, aboutMaterials, gallery } = req.body;
 
+  // aggregate variant stocks so postgres products.stock reflects the real available inventory
+  // (variants are kept in mongo as denormalized data; pg holds the transactional total)
+  const aggregatedStock = Array.isArray(variants)
+    ? variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
+    : 0;
+
   // will store ID of product created in postgres (needed for step 2 and rollback)
   let createdProductId = null;
 
@@ -56,7 +62,7 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
       sku,
       price,
       category_id,
-      stock: 0
+      stock: aggregatedStock
     });
 
     // handle different response shapes (id can be nested or primitive)

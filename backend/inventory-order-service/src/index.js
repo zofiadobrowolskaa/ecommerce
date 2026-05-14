@@ -241,6 +241,53 @@ app.post('/orders/:id/cancel', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// list all orders using prisma typed model api (R in CRUD)
+app.get('/orders', async (req, res, next) => {
+  try {
+    // findMany with include exercises eager loading via prisma's typed api
+    const orders = await prisma.order.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { lines: true }
+    });
+    res.json(orders);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// get single order by id using prisma typed model api (R in CRUD)
+app.get('/orders/:id', async (req, res, next) => {
+  try {
+    const orderId = parseInt(req.params.id);
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { lines: true }
+    });
+    if (!order) return res.status(404).json({ error: 'not_found' });
+    res.json(order);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// delete order using prisma typed model api (D in CRUD)
+// cascades to lines via the relation
+app.delete('/orders/:id', async (req, res, next) => {
+  try {
+    const orderId = parseInt(req.params.id);
+    // delete child lines first to satisfy fk constraint, then delete header
+    await prisma.$transaction([
+      prisma.orderLine.deleteMany({ where: { orderId } }),
+      prisma.order.delete({ where: { id: orderId } })
+    ]);
+    res.sendStatus(204);
+  } catch (err) {
+    // prisma throws P2025 when record to delete is not found
+    if (err.code === 'P2025') return res.status(404).json({ error: 'not_found' });
+    next(err);
+  }
+});
+
 // prisma $queryRaw (tagged template)
 app.get('/analytics/orders-report', async (req, res) => {
   try {
