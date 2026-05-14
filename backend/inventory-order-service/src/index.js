@@ -17,15 +17,33 @@ app.get('/health', (req, res) => {
 // CATALOG (KNEX)
 
 // dynamic filtering endpoint
-app.get('/products', async (req, res) => {
-  const { category, maxPrice } = req.query;
-  // dynamic where builder
-  const query = knex('products').where(builder => {
-    if (category) builder.where('category_id', category);
-    if (maxPrice) builder.where('price', '<=', maxPrice);
-  });
-  const products = await query;
-  res.json(products);
+app.get('/products', async (req, res, next) => {
+  try {
+    const { category, maxPrice } = req.query;
+
+    // coerce filters to numbers up-front so malformed values cannot reach SQL
+    const categoryId = category !== undefined ? Number(category) : undefined;
+    const maxPriceNum = maxPrice !== undefined ? Number(maxPrice) : undefined;
+
+    // reject non-numeric filters as 400 instead of crashing on a Postgres cast error
+    if (category !== undefined && !Number.isFinite(categoryId)) {
+      return res.status(400).json({ error: 'invalid_filter', details: 'category must be numeric' });
+    }
+    if (maxPrice !== undefined && !Number.isFinite(maxPriceNum)) {
+      return res.status(400).json({ error: 'invalid_filter', details: 'maxPrice must be numeric' });
+    }
+
+    // dynamic where builder (no string concatenation, all values bound as parameters)
+    const query = knex('products').where(builder => {
+      if (categoryId !== undefined) builder.where('category_id', categoryId);
+      if (maxPriceNum !== undefined) builder.where('price', '<=', maxPriceNum);
+    });
+    const products = await query;
+    res.json(products);
+  } catch (err) {
+    // forward unexpected errors to global handler (pgErrorMap) instead of crashing
+    next(err);
+  }
 });
 
 // get single product by id for gateway aggregation
@@ -63,9 +81,14 @@ app.post('/internal/products', async (req, res, next) => {
 });
 
 // rollback endpoint
-app.delete('/internal/products/:id', async (req, res) => {
-  await knex('products').where('id', req.params.id).del();
-  res.sendStatus(204);
+app.delete('/internal/products/:id', async (req, res, next) => {
+  try {
+    await knex('products').where('id', req.params.id).del();
+    res.sendStatus(204);
+  } catch (err) {
+    // delegate to global handler instead of leaving the promise unhandled
+    next(err);
+  }
 });
 
 // INVENTORY (PG DRIVER)
@@ -100,24 +123,25 @@ app.get('/cart/:userId', async (req, res) => {
   }
 });
 
-// sync cart items to server state
+// sync cart items to server state (managed transaction with model validation)
 app.post('/cart/:userId/sync', async (req, res) => {
   const { items } = req.body;
   try {
-    // managed transaction
+    // managed transaction: commits on resolve, rolls back on throw
     await sequelize.transaction(async (t) => {
       let cart = await Cart.findOne({ where: { userId: req.params.userId, status: 'OPEN' }, transaction: t });
       if (!cart) cart = await Cart.create({ userId: req.params.userId }, { transaction: t });
-      
-      // clear old state
+
+      // clear old state before re-applying client state
       await CartLine.destroy({ where: { CartId: cart.id }, transaction: t });
       let total = 0;
-      
+
       for (const item of items) {
         total += item.price * item.quantity;
         // safely extract number from frontend IDs (e.g. "p001" -> 1)
         const numericId = parseInt(String(item.productId).replace(/\D/g, '')) || 1;
-        
+
+        // CartLine.create runs model validators (quantity >= 1, price >= 0, ...)
         await CartLine.create({
           CartId: cart.id,
           productId: numericId,
@@ -126,10 +150,20 @@ app.post('/cart/:userId/sync', async (req, res) => {
         }, { transaction: t });
       }
       cart.totalPrice = total;
+      // Cart.save also runs model validators (totalPrice >= 0)
       await cart.save({ transaction: t });
     });
     res.sendStatus(200);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    // map sequelize validation errors to 400 so the client gets actionable feedback
+    if (e.name === 'SequelizeValidationError' || e.name === 'SequelizeUniqueConstraintError') {
+      return res.status(400).json({
+        error: 'validation_error',
+        details: e.errors.map(err => ({ field: err.path, message: err.message }))
+      });
+    }
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ORDERS AND CHECKOUT SAGA (PRISMA)
@@ -235,6 +269,11 @@ app.get('/analytics/orders-report', async (req, res) => {
 app.use(pgErrorMap);
 
 const PORT = process.env.PORT || 3001;
+
+// last-resort safety net: log unhandled rejections instead of letting Node kill the container
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandled_rejection:', reason);
+});
 
 sequelize.sync().then(() => {
   app.listen(PORT, () => console.log(`inventory service running on port ${PORT}`));

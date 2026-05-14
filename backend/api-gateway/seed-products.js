@@ -2,8 +2,8 @@ const fs = require('fs');
 
 // maps legacy category names to PostgreSQL category IDs
 const categoryMap = {
-  "Rings": 1,
-  "Earrings": 2,
+  "Earrings": 1,
+  "Rings": 2,
   "Necklaces": 3,
   "Bracelets": 4
 };

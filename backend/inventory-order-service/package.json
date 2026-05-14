@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "src/index.js",
   "scripts": {
-    "start": "npx knex migrate:latest && node src/index.js"
+    "start": "npx knex migrate:latest && npx knex seed:run && node src/index.js"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
