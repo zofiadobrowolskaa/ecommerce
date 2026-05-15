@@ -6,144 +6,243 @@ A comprehensive, feature-rich e-commerce platform for luxury jewellery. The proj
 
 # 🏗️ Part 1: Backend Architecture & Database Design
 
-The backend system is designed for a kiosk ordering point and implements the **Saga Pattern** to ensure hybrid consistency across relational and document databases.
+The backend system is designed as a kiosk ordering point. It implements the **Saga Pattern** to maintain consistency between a relational store (PostgreSQL) and a document store (MongoDB).
 
-### Microservices Breakdown
-1. **API Gateway (Port 3000):** The central entry point. Handles request validation (Zod), routing, distributed transaction orchestration, and OpenAPI documentation.
-2. **Inventory & Order Service (PostgreSQL - Port 3001):** Manages strictly transactional data: product catalog, stock levels (with oversell protection locks), server-side carts, and order creation with price snapshots.
-3. **Catalog & Analytics Service (MongoDB - Port 3002):** Handles flexible document data: extended product details, specifications, user reviews, cart drafts, and checkout telemetry events for server-side analytics.
+## 🧩 Microservices Breakdown
 
-### Data Flow Diagram (Hybrid Checkout Saga)
-The following Mermaid diagram illustrates the distributed transaction during checkout, ensuring cross-database consistency between PostgreSQL and MongoDB.
+| Service | Port | Stack | Responsibility |
+|---|---|---|---|
+| `api-gateway` | 3000 | Express + Zod + axios + swagger-ui-express | Public entry point. Routing, input validation, distributed saga orchestration, response aggregation, OpenAPI docs, unified error envelope. |
+| `pg-service` (Inventory & Order) | 3001 | Express + pg + Knex + Sequelize + Prisma | All ACID data: product catalog (`products`, `categories`), stock with `FOR UPDATE` oversell protection, server-side carts (`Carts`, `CartLines`), orders with price snapshots (`Order`, `OrderLine`). |
+| `mongo-service` (Catalog & Analytics) | 3002 | Express + mongodb native + Mongoose | All flexible/document data: extended product details with variants (`ProductDetail`), reviews with moderation history (`Review`), telemetry event log, cart drafts, analytics aggregations. |
+| `seeder` (one-shot) | n/a | Reuses api-gateway image | Posts 18 base products through the gateway once both services are healthy. Exits after completion so `docker compose up` requires zero manual steps. |
+| `frontend` | 5173 | React 18 + Vite | Customer storefront + admin panel. Out of scope for the database course grading. |
+
+Backing stores:
+
+| Store | Image | Purpose |
+|---|---|---|
+| `postgres` | postgres:15-alpine | Relational engine for transactional data. |
+| `mongodb` | mongo:6 | Document engine for flexible domain data and analytics. |
+
+## 🗺️ System Architecture (Component Diagram)
+
+```mermaid
+flowchart LR
+    subgraph public ["Public network"]
+        Client["Client<br/>(browser / Postman)"]
+    end
+
+    subgraph docker ["docker compose network"]
+        GW["api-gateway :3000<br/>Express + Zod + axios"]
+        PG_SVC["pg-service :3001<br/>Express + pg/Knex/Sequelize/Prisma"]
+        MG_SVC["mongo-service :3002<br/>Express + native + Mongoose"]
+        SEED["seeder<br/>(one-shot)"]
+
+        subgraph datastores ["Datastores"]
+            PG[("PostgreSQL :5432<br/>products, categories,<br/>Carts, CartLines,<br/>Order, OrderLine")]
+            MG[("MongoDB :27017<br/>productdetails, reviews,<br/>event_log, cart_draft")]
+        end
+    end
+
+    Client --HTTP--> GW
+    GW --HTTP--> PG_SVC
+    GW --HTTP--> MG_SVC
+    SEED -.HTTP.-> GW
+    PG_SVC --TCP--> PG
+    MG_SVC --TCP--> MG
+```
+
+Each microservice owns exactly one database engine. The gateway never talks to a database directly - it always goes through one of the two domain services.
+
+## 🔁 Data Flow — Hybrid Product Creation Saga (PG + Mongo with Compensation)
+
+This is the canonical "write to both databases" flow. It demonstrates how the saga keeps the two stores consistent even though there is no shared transaction manager.
 
 ```mermaid
 sequenceDiagram
-    participant C as "Client (Frontend/Postman)"
-    participant G as "API Gateway"
-    participant PG as "Inventory Service (PG)"
-    participant MG as "Analytics Service (Mongo)"
+    participant C as Client
+    participant G as api-gateway
+    participant PG as pg-service
+    participant MG as mongo-service
 
-    C->>G: POST /api/checkout
-    G->>G: Input Validation (Zod)
-    G->>PG: START TRANSACTION (Prisma)
-    PG->>PG: Stock Check (SELECT FOR UPDATE)
-    alt Out of Stock
-        PG-->>G: 409 Conflict (Oversell)
-        G-->>C: Error: conflict_oversell
-    else Stock Available
-        PG->>PG: Deduct Stock & Price Snapshot
-        PG-->>G: 201 Created (Order ID)
-        G->>MG: Fire & Forget: "Completed" Event Log
-        MG-->>G: Log Accepted
-        G-->>C: 201 Success
+    C->>G: POST /api/products { name, sku, price, variants, ... }
+    G->>G: Zod validation
+    G->>PG: POST /internal/products (step 1: insert base row)
+    alt PG insert fails (e.g. SQLSTATE 23505 unique sku)
+        PG-->>G: 409 / 400 { error, code, details }
+        G-->>C: 409 / 400 unified envelope (no compensation needed)
+    else PG insert OK
+        PG-->>G: 201 { id }
+        G->>MG: POST /internal/product-details (step 2: insert document)
+        alt Mongo insert fails (Mongoose validator, duplicate productId, ...)
+            MG-->>G: 4xx { error }
+            G->>PG: DELETE /internal/products/:id (compensation)
+            PG-->>G: 204
+            G-->>C: 4xx { error, code, details: { rollbackStatus: "success" } }<br/>+ header X-Rollback-Status: success
+        else Mongo insert OK
+            MG-->>G: 201
+            G-->>C: 201 { id, message: "product created in both databases" }
+        end
     end
 ```
 
+## 🔁 Data Flow — Hybrid Checkout Saga (PG transactional + Mongo telemetry)
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as api-gateway
+    participant PG as pg-service (Prisma)
+    participant MG as mongo-service
+
+    C->>G: POST /api/checkout { userId, items }
+    G->>G: Zod validation
+    G->>PG: POST /checkout
+    PG->>PG: prisma.$transaction (BEGIN)
+    PG->>PG: SELECT ... FOR UPDATE (row lock)
+    alt Stock < requested
+        PG-->>G: 409 conflict_oversell
+        G-->>C: 409 unified envelope (no telemetry recorded)
+    else Stock OK
+        PG->>PG: UPDATE stock; INSERT Order + OrderLines
+        PG->>PG: COMMIT
+        PG-->>G: 201 { orderId }
+        G->>MG: POST /telemetry/event ({ action: "checkout_completed" })<br/>(fire and forget for UX analytics)
+        MG-->>G: 201
+        G-->>C: 201 { success: true, orderId }
+    end
+```
+
+The cancel flow (`POST /api/orders/:id/cancel`) is the symmetric inverse: it updates `Order.status = CANCELLED` and restores stock via `tx.$executeRaw` inside another Prisma transaction.
+
 ## 🚀 Running the Backend (Docker Compose)
 
-The entire ecosystem (microservices + databases) is fully containerized and requires no manual setup.
+The entire stack is fully containerized. **`docker compose up` requires zero manual steps** - migrations, seeds and product population happen automatically.
 
-1. Clone the repository and navigate to the project folder:
-```
+1. Clone the repository and enter the folder:
+```bash
 git clone https://github.com/zofiadobrowolskaa/ecommerce-spa.git
 cd ecommerce-spa
 ```
 
-2. Ensure Docker and Docker Compose are installed.
+2. Make sure Docker and Docker Compose are installed.
 
-3. Create a ```.env``` file in the root directory (see variables below).
-
-4. Spin up the infrastructure:
-```docker compose up -d --build```
-
-5. Access the System
-
-- **API Gateway:** ```http://localhost:3000``` 
-- **Swagger UI (OpenAPI Docs):** ```http://localhost:3000/api-docs```  
-- **Inventory Service (Internal):** ```http://localhost:3001  ```
-- **Catalog Service (Internal):** ```http://localhost:3002```
-
-## ⚙️ Environment Variables (.env)
-Required configuration for the container orchestration:
-
+3. Copy the env template and adjust values if needed:
+```bash
+cp .env.example .env
 ```
-# database credentials
-POSTGRES_USER=user
-POSTGRES_PASSWORD=password
-POSTGRES_DB=ecommerce_db
-MONGO_INITDB_ROOT_USERNAME=admin
-MONGO_INITDB_ROOT_PASSWORD=password
 
-# service ports
-API_GATEWAY_PORT=3000
-INVENTORY_SERVICE_PORT=3001
-CATALOG_SERVICE_PORT=3002
-FRONTEND_PORT=5173
+4. Build and start the whole stack:
+```bash
+docker compose up -d --build
 ```
+
+What happens on first start:
+- `postgres` and `mongodb` boot, become `healthy`.
+- `pg-service` waits for `postgres healthy`, then runs `prisma migrate deploy && knex migrate:latest && knex seed:run` before opening port 3001.
+- `mongo-service` waits for `mongodb healthy`, then creates required indexes (text + compound) before opening port 3002.
+- `api-gateway` waits for **both** microservices to be `healthy`, then opens port 3000.
+- `seeder` (one-shot) waits for `api-gateway healthy`, posts 18 products through the gateway saga (populating both Postgres and MongoDB), then exits.
+
+5. Verify the stack:
+```bash
+docker compose ps -a        # all services Up / healthy, seeder Exited (0)
+```
+
+6. Access the system:
+- **API Gateway:** http://localhost:3000
+- **Swagger UI (OpenAPI Docs):** http://localhost:3000/api-docs
+- **Inventory Service (internal):** http://localhost:3001
+- **Catalog Service (internal):** http://localhost:3002
+
+## ⚙️ Environment Variables
+
+A documented template lives in [`.env.example`](.env.example). Copy it to `.env` before the first `docker compose up`.
+
+| Variable | Default | Used by | Purpose |
+|---|---|---|---|
+| `POSTGRES_USER` | `user` | postgres, pg-service | Postgres credentials |
+| `POSTGRES_PASSWORD` | `password` | postgres, pg-service | Postgres credentials |
+| `POSTGRES_DB` | `ecommerce_db` | postgres, pg-service | Postgres database name |
+| `MONGO_INITDB_ROOT_USERNAME` | `admin` | mongodb | Mongo admin user |
+| `MONGO_INITDB_ROOT_PASSWORD` | `password` | mongodb | Mongo admin password |
+| `MONGO_URI` | `mongodb://admin:password@mongodb:27017/ecommerce_db?authSource=admin` | mongo-service | Mongoose / native driver connection string |
+| `API_GATEWAY_PORT` | `3000` | compose | Host port exposing the gateway |
+| `INVENTORY_SERVICE_PORT` | `3001` | compose | Host port exposing pg-service |
+| `CATALOG_SERVICE_PORT` | `3002` | compose | Host port exposing mongo-service |
+| `FRONTEND_PORT` | `5173` | compose | Host port exposing the SPA |
+| `INVENTORY_SERVICE_URL` | `http://pg-service:3001` | api-gateway | Internal service discovery URL |
+| `CATALOG_SERVICE_URL` | `http://mongo-service:3002` | api-gateway | Internal service discovery URL |
 
 ## 📡 API Documentation (OpenAPI / Swagger)
-The system exposes a fully interactive **OpenAPI 3.0** REST contract. It documents all available endpoints, query parameters, required request bodies (schemas), and expected HTTP responses.
-* **Access:** Once the containers are running, navigate to `http://localhost:3000/api-docs` to access the Swagger UI.
+
+The gateway exposes a fully interactive **OpenAPI 3.0** contract documenting endpoints, request bodies, query parameters and response shapes (including the unified `{ error, code, details }` envelope).
+
+- **Swagger UI:** http://localhost:3000/api-docs
 
 ## 🛠️ Database Technologies & ORMs (Polyglot Implementation)
-To demonstrate proficiency across multiple database interaction paradigms, the backend implements distinct drivers and ORMs for specific bounded contexts:
 
-**PostgreSQL (Relational):**
-1. **`pg` native driver:** Manages high-performance inventory stock deductions and explicit HTTP error mapping.
-2. **Knex.js:** Handles database schema migrations, initial seed data, and dynamic SQL query building for the product catalog filtering.
-3. **Sequelize v6:** Manages the server-side shopping cart state with schema validation and eager loading.
-4. **Prisma ORM:** Orchestrates complex checkout transactions, order creation, and executes raw SQL queries (`$queryRaw`) for reporting.
+The backend uses **seven** distinct database interaction paradigms in clearly separated bounded contexts:
 
-**MongoDB (Document):**
+**PostgreSQL side (pg-service):**
+1. **`pg` native driver** – Singleton pool, parameterized queries (`$1, $2`), SQLSTATE → HTTP mapping (`23505` → 409, `23503` → 400). Powers inventory stock deductions.
+2. **Knex.js** – Schema migrations and domain seeds (categories). Dynamic `WHERE` builder for product catalog filtering (no string concatenation, parameters bound by the builder).
+3. **Sequelize v6** – Server-side cart (`Cart`, `CartLine`) with explicit model validators, eager loading via `include`, domain hooks (`beforeValidate`, `afterSave`) and managed transactions.
+4. **Prisma ORM** – Order header / order line schema with relations, migration history (`prisma migrate deploy` runs at container start), full CRUD via typed model API, `$queryRaw` tagged templates for `FOR UPDATE` locking and analytics.
 
-5. **MongoDB Native Driver:** Fast, low-overhead insertions for the telemetry and analytics event log via Singleton connection.
-6. **Mongoose:** Manages complex nested schemas, custom validations, and hooks for product details and reviews.
-7. **Aggregation Pipeline:** Utilized directly in the database engine to perform advanced analytics and grouping on sales data.
+**MongoDB side (mongo-service):**
 
-## 🛡️ Security & Threat Mitigation (Threat Modeling)
+5. **MongoDB native driver** – Singleton `MongoClient`, graceful shutdown on `SIGINT` / `SIGTERM`, telemetry log + cart drafts using 4 distinct operators (`$push`, `$inc`, `$set`, `$pull`). Compound and text indexes.
+6. **Mongoose** – `ProductDetail` and `Review` schemas with custom validators (rating must be integer, body must have ≥ 3 words, variants must have unique colors), nested subdocuments (`variants[]`, `gallery[]`, `moderationHistory[]`), pre-save hook, virtual populate, statics (`findByProduct`) and instance methods (`approve()`, `reject()`).
+7. **Aggregation Pipeline** – 7-stage analytics report (`$match` → `$group` → `$lookup` → `$unwind` → `$sort` → `$limit` → `$project`). First `$match` is backed by a compound index `{ status, productId }` so the planner uses `IXSCAN` instead of `COLLSCAN`.
 
-The system enforces multiple security layers:
+## 🛡️ Security & Threat Mitigation
 
 ### 1. 🔐 Input Validation
-All incoming requests are strictly validated using **Zod schemas** before reaching the database, preventing NoSQL/SQL injection and ensuring data integrity.
+Every incoming request is validated by **Zod** schemas before reaching the gateway business logic, blocking SQL/NoSQL injection vectors. Mongoose adds a second layer of validation (custom validators) for document writes.
 
 ### 2. 🚫 Stack Trace Hiding
-Global error handlers encapsulate internal crashes.  
-Express stack traces never leak to the client and are mapped to generic HTTP error messages.
+A global Express error handler returns the unified envelope on any unexpected throw. Stack traces are logged on the server side only.
 
 ### 3. 🧾 Explicit Database Error Handling
-Native PostgreSQL errors are safely mapped:
-
+PostgreSQL `SQLSTATE` codes are mapped to HTTP:
 - `23505` (Unique Violation) → `409 Conflict`
 - `23503` (Foreign Key Violation) → `400 Bad Request`
 
 ### 4. ⚠️ Threat Mitigations
+- **Race conditions / overselling:** prevented by row-level locking (`SELECT ... FOR UPDATE`) inside Prisma interactive transactions during checkout.
+- **Distributed state inconsistency:** handled by the Saga Pattern. Failures in the second step trigger a compensating action in the first (e.g. `DELETE` in PG after a Mongo write failed). Compensation outcome is reported via the `X-Rollback-Status` response header.
 
-### 🧨 Race Conditions (Overselling)
-Eliminated using strict row-level locking (`FOR UPDATE`) inside interactive Prisma transactions during checkout.
+### 5. 🧱 Unified Error Envelope
+**Every** failure response across all three services follows the contract `{ error: string, code: number, details: any }`. The client never sees raw exceptions, ORM-specific error shapes, or framework boilerplate.
 
-### 🔄 Inconsistent State (Distributed Systems)
-Handled via the **Saga Pattern**. If the hybrid product creation fails in Mongo, a rollback (compensation) is triggered in Postgres.
+## 🧪 Automated Testing
 
-## 🧪 Automated E2E Testing
+### Postman collection (recommended)
 
-The repository includes a comprehensive End-to-End test suite using **supertest**.
+A full Postman collection is bundled at [`tests/postman/BD2-backend.postman_collection.json`](tests/postman/BD2-backend.postman_collection.json). Import it into Postman and run the folders in order.
 
-During CI/CD (GitHub Actions), a dedicated isolated database container is spun up to verify critical system paths.
+Helpers in [`tests/`](tests/):
+- `setup.ps1` – clean rebuild + wait for healthy + show seeded products.
+- `containerization.ps1` – sanity checks for multi-stage Dockerfiles, healthchecks, depends_on, .env.example, auto-seeder.
+- `microservices.ps1` – sanity checks for separate Node containers, DB split, HTTP discovery, migrations from compose.
 
-### ✅ Covered Critical Paths
+### E2E suite (CI/CD)
 
-- Fetching initial stock levels  
-- **Oversell protection** → forcing `409 Conflict` when requesting more stock than available  
-- Successful checkout finalization  
-- Strict verification of stock reduction  
-- Stock restoration after order cancellation  
-- Hybrid product creation saga (Postgres + MongoDB)  
-- Zod validation failure rejection  
+`tests/api-gateway/src/e2e.test.js` uses `supertest`. GitHub Actions spins up an isolated stack and runs:
+- initial stock fetching
+- oversell protection (`409 Conflict`)
+- successful checkout finalization
+- stock reduction verification
+- stock restoration after cancellation
+- hybrid product creation saga
+- Zod validation rejection
 
-Run tests locally:
-
-```docker exec -it spa-api-gateway-1 npm run test:e2e```
+Run locally:
+```bash
+docker exec -it spa-api-gateway-1 npm run test:e2e
+```
 
 
 
