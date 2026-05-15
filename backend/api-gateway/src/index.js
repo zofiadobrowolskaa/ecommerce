@@ -150,6 +150,16 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   }
 });
 
+// list product categories — relational table
+app.get('/api/categories', async (req, res) => {
+  try {
+    const r = await axios.get(`${INVENTORY_SERVICE}/categories`);
+    res.json(r.data);
+  } catch (e) {
+    handleError(res, e, 'categories_list_failed');
+  }
+});
+
 // update product price (business rule: price change does not touch order_lines).
 // snapshot semantics live in the OrderLine model (price column filled at checkout)
 // so this proxy intentionally only forwards the products.price update.

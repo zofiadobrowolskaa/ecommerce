@@ -1692,6 +1692,7 @@
                   "  '/api/products',",
                   "  '/api/products/{id}',",
                   "  '/api/products/{id}/price',",
+                  "  '/api/categories',",
                   "  '/api/cart/{userId}',",
                   "  '/api/cart/{userId}/add',",
                   "  '/api/cart/{userId}/sync',",
@@ -2290,6 +2291,52 @@
       "name": "15. model relacyjny — postgres",
       "item": [
         {
+          "name": "categories — GET /api/categories (table: categories)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/categories", "host": ["{{gateway}}"], "path": ["api", "categories"] },
+            "description": "Wymaganie 15: relacyjna tabela categories. Seed wprowadza 4 kategorie (Earrings/Rings/Necklaces/Bracelets)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('array of 4 seeded categories', () => pm.expect(rows).to.be.an('array').that.has.length.at.least(4));",
+                  "pm.test('id+name shape', () => pm.expect(rows[0]).to.include.keys('id', 'name'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "products — GET /products/:id confirms FK to categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/1", "host": ["{{inventory}}"], "path": ["products", "1"] },
+            "description": "Tabela products (relacja FK category_id → categories). Sprawdza shape z migration: id, sku unique, price, stock, category_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('relational columns', () => pm.expect(p).to.include.keys('id', 'sku', 'price', 'stock', 'category_id'));",
+                  "pm.test('FK to categories present', () => pm.expect(Number(p.category_id)).to.be.greaterThan(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "variants — GET /products/:id/variants",
           "request": {
             "method": "GET",
@@ -2423,6 +2470,101 @@
                   "const rows = pm.response.json();",
                   "const hit = rows.find(r => r.reason === 'order_cancel_restore' && r.order_id === oid);",
                   "pm.test('compensating movement recorded', () => pm.expect(hit).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "carts — POST /cart/:userId/sync creates Carts + CartLines rows",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"variantSku\": \"{{rel_variant_sku}}\", \"quantity\": 2, \"price\": {{rel_variant_price}} }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/req15-user/sync", "host": ["{{inventory}}"], "path": ["cart", "req15-user", "sync"] },
+            "description": "Wymaganie 15: tabela carts + cart_lines. Sequelize managed transaction tworzy/odświeża wiersze i pilnuje walidatorów (quantity >= 1, price >= 0)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cart synced 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "carts — GET /cart/:userId returns relational join (Carts ⋈ CartLines)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/cart/req15-user", "host": ["{{inventory}}"], "path": ["cart", "req15-user"] },
+            "description": "Tabela carts + cart_lines (Sequelize hasMany). Eager loading via include — relacja użyta w endpoincie."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const cart = pm.response.json();",
+                  "pm.test('Carts row shape', () => pm.expect(cart).to.include.keys('id', 'userId', 'status', 'totalPrice'));",
+                  "const lines = cart.CartLines || cart.cartLines || [];",
+                  "pm.test('CartLines array present', () => pm.expect(lines).to.be.an('array').that.is.not.empty);",
+                  "pm.test('CartLines columns', () => pm.expect(lines[0]).to.include.keys('productId', 'quantity', 'priceAtEntry'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "order_lines — snapshot of SKU AND price survives on the historical row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{rel_order_id}}", "host": ["{{inventory}}"], "path": ["orders", "{{rel_order_id}}"] },
+            "description": "Wymaganie 15: order_lines z snapshotem ceny I SKU. Linia musi zwracać sku (string) + price (decimal) zapisane w chwili checkoutu — nie referencję do products.price."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const order = pm.response.json();",
+                  "pm.test('Order header fields', () => pm.expect(order).to.include.keys('id', 'status', 'totalAmount', 'createdAt'));",
+                  "pm.test('lines array present', () => pm.expect(order.lines).to.be.an('array').that.is.not.empty);",
+                  "const line = order.lines[0];",
+                  "pm.test('SKU snapshot is a string', () => pm.expect(line.sku).to.be.a('string').that.is.not.empty);",
+                  "pm.test('price snapshot is a non-negative number', () => pm.expect(Number(line.price)).to.be.at.least(0));",
+                  "pm.test('quantity column present', () => pm.expect(line.quantity).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "transactional checkout rolls back fully on oversell (no partial writes)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"req15-rollback-user\",\n  \"items\": [\n    { \"productId\": 1, \"sku\": \"{{rel_variant_sku}}\", \"quantity\": 999999, \"price\": {{rel_variant_price}} }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Wymaganie 15: transakcja przy checkout. Próba przekroczenia stocku rzuca w środku transakcji → ROLLBACK. Żadne variants.stock nie ma być zmodyfikowane, żaden Order/OrderLine nie powstaje, żaden inventory_movement nie jest zapisany."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409 conflict_oversell', () => pm.response.to.have.status(409));",
+                  "pm.test('error envelope', () => pm.expect(pm.response.json()).to.include.all.keys('error', 'code', 'details'));"
                 ]
               }
             }

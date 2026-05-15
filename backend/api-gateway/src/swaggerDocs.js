@@ -228,6 +228,27 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/categories': {
+      get: {
+        tags: ['Products'],
+        summary: 'List product categories',
+        responses: {
+          200: {
+            description: 'Array of categories',
+            content: {
+              'application/json': {
+                example: [
+                  { id: 1, name: 'Earrings' },
+                  { id: 2, name: 'Rings' },
+                  { id: 3, name: 'Necklaces' },
+                  { id: 4, name: 'Bracelets' }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     '/api/products/{id}/price': {
       patch: {
         tags: ['Products'],

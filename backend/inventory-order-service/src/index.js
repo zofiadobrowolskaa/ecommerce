@@ -32,6 +32,17 @@ app.get('/health', (req, res) => {
 
 // CATALOG (KNEX)
 
+// list product categories
+// returned sorted by id so the response is deterministic for tests
+app.get('/categories', async (req, res, next) => {
+  try {
+    const rows = await knex('categories').select('id', 'name').orderBy('id', 'asc');
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // list sku-level inventory rows for a product (relational variants table)
 app.get('/products/:productId/variants', async (req, res, next) => {
   try {
