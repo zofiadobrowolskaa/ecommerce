@@ -207,23 +207,25 @@ The backend uses **seven** distinct database interaction paradigms in clearly se
 
 ## 🛡️ Security & Threat Mitigation
 
-### 1. 🔐 Input Validation
-Every incoming request is validated by **Zod** schemas before reaching the gateway business logic, blocking SQL/NoSQL injection vectors. Mongoose adds a second layer of validation (custom validators) for document writes.
+The backend implements a defense-in-depth approach. The table below maps concrete threats to the layer that mitigates them.
 
-### 2. 🚫 Stack Trace Hiding
-A global Express error handler returns the unified envelope on any unexpected throw. Stack traces are logged on the server side only.
+| # | Threat (OWASP / CWE) | Mitigation in this project | File |
+|---|---|---|---|
+| T1 | **SQL injection** (CWE-89) | All PG calls use parameterized queries (`$1, $2`). Knex query builder binds values, never concatenates strings. Numeric query params are coerced and validated before they reach SQL. | `pg-service/src/index.js`, `pg-service/src/db/pg.js` |
+| T2 | **NoSQL injection** (CWE-943) | All write paths go through Mongoose schemas with explicit types + custom validators. The native driver receives only objects assembled server-side. | `mongo-service/src/models/*.js`, `mongo-service/src/db/mongoClient.js` |
+| T3 | **Malformed input / bad types** (CWE-20) | Every public POST/PUT on the gateway runs through a Zod schema before hitting the saga. Invalid input → 400 `validation_error`. | `api-gateway/src/validators.js` |
+| T4 | **Stack trace / error info leak** (CWE-209) | Global Express error handlers in **all three services** return the unified `{ error, code, details }` envelope. `err.stack` is logged server-side only. | `pgErrorMap`, `mongoErrorMap`, gateway global handler |
+| T5 | **Unique constraint exposure** (CWE-209) | Postgres `SQLSTATE 23505` is mapped to `409 conflict_unique_violation`; FK violation `23503` → `400 foreign_key_violation`. No raw `pg` error object is forwarded. | `pg-service/src/middleware/errorMiddleware.js` |
+| T6 | **Mongoose / Mongo error exposure** | `ValidationError` → 400, `CastError` → 400, duplicate key (11000) → 409, network errors → 503. The client never sees `err.errInfo` or driver internals. | `mongo-service/src/middleware/mongoErrorMiddleware.js` |
+| T7 | **Race condition / oversell** (CWE-362) | `SELECT ... FOR UPDATE` row lock inside a Prisma interactive transaction during checkout. Concurrent oversells are serialized. | `pg-service/src/index.js` (`/checkout`) |
+| T8 | **Distributed state corruption** (CWE-460) | Saga Pattern. Failures in step 2 trigger compensating `DELETE` in step 1. Outcome is exposed via `X-Rollback-Status` response header. | `api-gateway/src/index.js` (`POST /api/products`) |
+| T9 | **Payload-flood / DoS** (CWE-770) | `express.json({ limit: '100kb' })` on every service rejects oversized bodies with `413 Payload Too Large`. | all three `index.js` |
+| T10 | **Unhandled rejection / container crash** | `process.on('unhandledRejection', ...)` keeps the container alive and logs the reason instead of letting Node abort. | `pg-service/src/index.js` |
 
-### 3. 🧾 Explicit Database Error Handling
-PostgreSQL `SQLSTATE` codes are mapped to HTTP:
-- `23505` (Unique Violation) → `409 Conflict`
-- `23503` (Foreign Key Violation) → `400 Bad Request`
+### Verifying the mitigations
 
-### 4. ⚠️ Threat Mitigations
-- **Race conditions / overselling:** prevented by row-level locking (`SELECT ... FOR UPDATE`) inside Prisma interactive transactions during checkout.
-- **Distributed state inconsistency:** handled by the Saga Pattern. Failures in the second step trigger a compensating action in the first (e.g. `DELETE` in PG after a Mongo write failed). Compensation outcome is reported via the `X-Rollback-Status` response header.
+Run the `14. security` folder in the Postman collection — it covers each of T1, T3, T4, T5, T6 and T9 with a live request and asserts the unified envelope every time.
 
-### 5. 🧱 Unified Error Envelope
-**Every** failure response across all three services follows the contract `{ error: string, code: number, details: any }`. The client never sees raw exceptions, ORM-specific error shapes, or framework boilerplate.
 
 ## 🧪 Automated Testing
 

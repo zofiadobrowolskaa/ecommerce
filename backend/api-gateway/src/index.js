@@ -15,7 +15,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+// cap request body to 100kb to mitigate trivial payload-flood / dos attacks
+app.use(express.json({ limit: '100kb' }));
 
 // simple healthcheck endpoint
 app.get('/health', (req, res) => {
@@ -311,6 +312,20 @@ app.get('/api/products/:id', async (req, res) => {
 
 // global error handler to fully suppress stack traces from express
 app.use((err, req, res, next) => {
+  // body-parser raises entity.too.large when the JSON exceeds the configured limit
+  // surface it as 413 so DoS protection is observable and matches the unified envelope
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return sendError(res, 413, 'payload_too_large', {
+      limit: err.limit,
+      length: err.length
+    });
+  }
+
+  // malformed json bodies must not crash the process either
+  if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return sendError(res, 400, 'invalid_json', err.message);
+  }
+
   // log internal error (should be replaced with structured logging in production)
   console.error('system_error:', err.message);
 

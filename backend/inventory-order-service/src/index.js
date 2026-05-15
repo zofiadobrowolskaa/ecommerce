@@ -7,7 +7,8 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 const app = express();
-app.use(express.json());
+// cap request body to 100kb to mitigate trivial payload-flood / dos attacks
+app.use(express.json({ limit: '100kb' }));
 
 // unified error response helper: every failure responds with { error, code, details }
 const sendError = (res, status, error, details) =>

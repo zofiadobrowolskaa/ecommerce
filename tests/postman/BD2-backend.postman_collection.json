@@ -2110,6 +2110,218 @@
           ]
         }
       ]
+    },
+    {
+      "name": "14. security",
+      "item": [
+        {
+          "name": "T3 input validation: Zod rejects malformed product",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"\",\n  \"sku\": 123,\n  \"price\": \"not a number\",\n  \"category_id\": -5\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Malformed payload (empty name, wrong types, negative id) must be rejected by Zod BEFORE reaching the database."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('error is validation_error', () => pm.expect(body.error).to.eql('validation_error'));",
+                  "pm.test('details is an array of zod issues', () => pm.expect(body.details).to.be.an('array').that.is.not.empty);",
+                  "pm.test('envelope shape preserved', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T3 input validation: checkout requires non-empty items",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"sec\",\n  \"items\": []\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Empty cart at checkout - Zod must enforce min(1)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T1 SQL injection probe (knex dynamic where) is parameterized",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products?category=1' OR '1'='1", "host": ["{{gateway}}"], "path": ["api", "products"], "query": [{ "key": "category", "value": "1' OR '1'='1" }] },
+            "description": "Classic SQL injection payload. Numeric coercion + parameter binding -> 400 invalid_filter (or 200 [] depending on coercion). Server MUST stay up and table MUST still exist."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('server still up (no 5xx)', () => pm.expect(pm.response.code).to.be.below(500));",
+                  "pm.test('responds with unified envelope or empty array', () => {",
+                  "  const ct = pm.response.headers.get('Content-Type') || '';",
+                  "  if (ct.includes('json')) {",
+                  "    const body = pm.response.json();",
+                  "    if (Array.isArray(body)) { pm.expect(body.length).to.eql(0); }",
+                  "    else { pm.expect(body).to.include.all.keys('error', 'code', 'details'); }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T1 SQL injection probe: table still exists (regression check)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "After the injection probe, the products table must still be there - simply listing must return content."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('list still populated', () => pm.expect(pm.response.json().length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T6 mongo cast error -> 400 invalid_id_format (catalog)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/NOT-A-VALID-OBJECT-ID-OR-NUMBER!", "host": ["{{catalog}}"], "path": ["product-details", "NOT-A-VALID-OBJECT-ID-OR-NUMBER!"] },
+            "description": "Mongoose CastError must be translated to 400 with the unified envelope - no raw stack trace."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope shape', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('body has no stack trace (no \"at \" lines)', () => {",
+                  "  pm.expect(JSON.stringify(body)).to.not.match(/\\n\\s+at /);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T5 pg unique violation -> 409 conflict_unique_violation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Duplicate Probe\",\n  \"sku\": \"p001\",\n  \"price\": 10,\n  \"category_id\": 1,\n  \"variants\": [{ \"id\": \"a\", \"color\": \"X\", \"stock\": 1 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "SKU p001 already seeded - PG must throw 23505 - mapped to 409 unified envelope, NOT the raw pg error object."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope shape', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('no stack trace leaks', () => pm.expect(JSON.stringify(body)).to.not.match(/\\n\\s+at /));",
+                  "pm.test('no raw pg error fields (pg-driver leak)', () => {",
+                  "  const txt = JSON.stringify(body);",
+                  "  pm.expect(txt).to.not.match(/file\\\":\\\"[a-z]+\\.c/);",
+                  "  pm.expect(txt).to.not.match(/routine\\\":/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T4 stack trace hiding: catalog cast error body is sanitized",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/!!!", "host": ["{{catalog}}"], "path": ["product-details", "!!!"] },
+            "description": "Same as T6 but explicit check that 'err.stack' is NEVER in the response body."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const txt = pm.response.text();",
+                  "pm.test('no \"err.stack\"-style lines', () => pm.expect(txt).to.not.match(/\\n\\s+at /));",
+                  "pm.test('no nodejs file paths', () => pm.expect(txt).to.not.match(/\\/app\\/node_modules\\//));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T9 payload-flood DoS: oversized body rejected (413)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{{huge_payload}}"
+            },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Request body > 100kb must be rejected by express body-parser before reaching the route handler."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const filler = 'A'.repeat(150 * 1024);",
+                  "const big = JSON.stringify({ userId: 'dos', items: [{ productId: 1, quantity: 1, price: 1 }], junk: filler });",
+                  "pm.variables.set('huge_payload', big);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413 Payload Too Large', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

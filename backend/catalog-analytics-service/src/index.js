@@ -3,9 +3,11 @@ const { connectMongo, getDb } = require('./db/mongoClient');
 const connectMongoose = require('./db/mongoose');
 const ProductDetail = require('./models/ProductDetail');
 const Review = require('./models/Review');
+const mongoErrorMap = require('./middleware/mongoErrorMiddleware');
 
 const app = express();
-app.use(express.json());
+// cap request body to 100kb to mitigate trivial payload-flood / dos attacks
+app.use(express.json({ limit: '100kb' }));
 
 // unified error response helper: every failure responds with { error, code, details }
 const sendError = (res, status, error, details) =>
@@ -257,30 +259,40 @@ app.post('/internal/product-details', async (req, res) => {
 });
 
 // fetch product details for api gateway aggregation
-app.get('/product-details/:productId', async (req, res) => {
+app.get('/product-details/:productId', async (req, res, next) => {
   try {
-    const detail = await ProductDetail.findOne({ productId: Number(req.params.productId) });
+    // explicit input validation: productId must be a finite number
+    // (silent NaN match would otherwise return a misleading 404)
+    const id = Number(req.params.productId);
+    if (!Number.isFinite(id)) {
+      return sendError(res, 400, 'invalid_id_format', {
+        path: 'productId',
+        value: req.params.productId,
+        kind: 'numeric'
+      });
+    }
+
+    const detail = await ProductDetail.findOne({ productId: id });
     if (!detail) {
       return sendError(res, 404, 'not_found', `product details for ${req.params.productId} not found`);
     }
 
     // fetch approved reviews to attach to details
-    const reviews = await Review.find({ productId: Number(req.params.productId), status: 'APPROVED' });
+    const reviews = await Review.find({ productId: id, status: 'APPROVED' });
 
     res.status(200).json({
       ...detail.toObject(),
       reviews: reviews
     });
   } catch (error) {
-    sendError(res, 500, 'internal_server_error', error.message);
+    // delegate to mongoErrorMap so the response is never a raw stack trace
+    next(error);
   }
 });
 
-// global error handler (final fallback) - always responds in unified shape
-app.use((err, req, res, next) => {
-  console.error('catalog_system_error:', err.message);
-  sendError(res, 500, 'internal_server_error', 'unexpected critical error');
-});
+// explicit mongo / mongoose error handling - never leak stack traces
+// must be registered AFTER all routes
+app.use(mongoErrorMap);
 
 const PORT = process.env.PORT || 3002;
 
