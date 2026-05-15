@@ -25,9 +25,10 @@ app.get('/health', (req, res) => {
 // mount openapi swagger ui
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-// service urls from docker network
-const INVENTORY_SERVICE = 'http://pg-service:3001';
-const CATALOG_SERVICE = 'http://mongo-service:3002';
+// service urls injected via env so the gateway can be reconfigured without code changes
+// defaults point to docker compose service names on the internal network
+const INVENTORY_SERVICE = process.env.INVENTORY_SERVICE_URL || 'http://pg-service:3001';
+const CATALOG_SERVICE = process.env.CATALOG_SERVICE_URL || 'http://mongo-service:3002';
 
 // helper for standardized errors
 const handleError = (res, err, defaultError = 'gateway_error') => {
@@ -233,9 +234,10 @@ app.get('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const inventoryUrl = `http://pg-service:3001/products/${id}`;
+    // build url from env-configured service base (consistent with axios calls above)
+    const inventoryUrl = `${INVENTORY_SERVICE}/products/${id}`;
 
-    // fetch base product first (may resolve SKU → numeric ID)
+    // fetch base product first (may resolve SKU -> numeric ID)
     const invResponse = await fetch(inventoryUrl);
 
     // handle inventory errors (source of truth)
@@ -250,8 +252,8 @@ app.get('/api/products/:id', async (req, res) => {
     const inventoryData = await invResponse.json();
     const numericId = inventoryData.id;
 
-    // use numeric ID for catalog lookup (Mongo uses PG-generated IDs)
-    const catalogUrl = `http://mongo-service:3002/product-details/${numericId}`;
+    // catalog lookup also uses env-configured base url
+    const catalogUrl = `${CATALOG_SERVICE}/product-details/${numericId}`;
 
     // catalog is optional → fallback if unavailable
     const catResponse = await fetch(catalogUrl).catch(() => null);

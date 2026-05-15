@@ -1,3 +1,8 @@
+// domain seeder for the microservices stack
+// runs as a one-shot docker compose service after the gateway is healthy
+// each POST /api/products triggers the hybrid saga: pg-service writes the base
+// row to Postgres, mongo-service writes the extended document to MongoDB
+
 const fs = require('fs');
 
 // gateway base url; defaults to localhost so the script also works from the host

@@ -1251,6 +1251,167 @@
           ]
         }
       ]
+    },
+    {
+      "name": "9. microservices",
+      "item": [
+        {
+          "name": "all 3 services answer /health independently",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/health", "host": ["{{gateway}}"], "path": ["health"] },
+            "description": "Gateway zwraca 200 + service=api-gateway. Potwierdza ze gateway dziala niezaleznie od bazy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is api-gateway', () => pm.expect(pm.response.json().service).to.eql('api-gateway'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "inventory service answers /health on its own port",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/health", "host": ["{{inventory}}"], "path": ["health"] },
+            "description": "pg-service zwraca service=inventory-order-service. Dowod osobnego kontenera Node z wlasnym /health."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is inventory-order-service', () => pm.expect(pm.response.json().service).to.eql('inventory-order-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "catalog service answers /health on its own port",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/health", "host": ["{{catalog}}"], "path": ["health"] },
+            "description": "mongo-service zwraca service=catalog-analytics-service. Dowod osobnego kontenera Node."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is catalog-analytics-service', () => pm.expect(pm.response.json().service).to.eql('catalog-analytics-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway aggregates pg + mongo data (GET /api/products/1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products/1", "host": ["{{gateway}}"], "path": ["api", "products", "1"] },
+            "description": "Gateway robi 2 HTTP calls: pg-service po base data + mongo-service po details/variants, agreguje w jeden response. Oczekiwane: 200 z polami z OBYDWU baz."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has pg fields (id, sku, price, stock)', () => {",
+                  "  pm.expect(body).to.have.property('id');",
+                  "  pm.expect(body).to.have.property('sku');",
+                  "  pm.expect(body).to.have.property('price');",
+                  "  pm.expect(body).to.have.property('stock');",
+                  "});",
+                  "pm.test('has mongo fields (variants, gallery)', () => {",
+                  "  pm.expect(body).to.have.property('variants').that.is.an('array');",
+                  "  pm.expect(body).to.have.property('gallery').that.is.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway hybrid saga - creates product in BOTH databases (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Microservice Test Product\",\n  \"sku\": \"MS_TEST_001\",\n  \"price\": 99.99,\n  \"category_id\": 1,\n  \"long_description\": \"created via gateway saga\",\n  \"variants\": [\n    { \"id\": \"vms1\", \"color\": \"Silver\", \"stock\": 50, \"size\": [\"S\"] }\n  ]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Gateway koordynuje saga: step 1 POST do pg-service, step 2 POST do mongo-service. Jesli step 2 padnie - kompensacja w pg. Oczekiwane: 201 z id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('returns id from pg-service', () => pm.expect(pm.response.json().id).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "no DB cross-talk: pg-service does NOT expose mongo endpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/product-details/1", "host": ["{{inventory}}"], "path": ["product-details", "1"] },
+            "description": "pg-service nie powinien znac endpointu z mongo-service. Oczekiwane: 404. Dowod podzialu per silnik BD."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404 (endpoint does not exist on pg-service)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "no DB cross-talk: mongo-service does NOT expose pg endpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/checkout", "host": ["{{catalog}}"], "path": ["checkout"] },
+            "description": "mongo-service nie powinien znac endpointu /checkout (pg-service-only). Oczekiwane: 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404 (endpoint does not exist on mongo-service)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
