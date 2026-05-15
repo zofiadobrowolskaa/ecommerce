@@ -1,0 +1,2115 @@
+{
+  "info": {
+    "name": "BD2 Backend Tests",
+    "description": "tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gateway", "value": "http://localhost:3000" },
+    { "key": "inventory", "value": "http://localhost:3001" },
+    { "key": "catalog", "value": "http://localhost:3002" }
+  ],
+  "item": [
+    {
+      "name": "1. sterownik pg",
+      "item": [
+        {
+          "name": "parameterized update success (PATCH /inventory/:sku)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 1\n}" },
+            "url": { "raw": "{{inventory}}/inventory/p001", "host": ["{{inventory}}"], "path": ["inventory", "p001"] },
+            "description": "Pula singleton + zapytanie parametryzowane $1,$2. Oczekiwane: 204 No Content. Stock produktu p001 spada o 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unique violation 23505 -> 409 (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Duplicate Test\",\n  \"sku\": \"DUPLICATE_TEST_001\",\n  \"price\": 100,\n  \"category_id\": 1,\n  \"long_description\": \"test\"\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Wyślij DWA RAZY. 1. raz: 201 Created. 2. raz: 409 Conflict z kodem 23505 w details (mapowanie błędu unique violation)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// expect 201 on first call, 409 on subsequent calls",
+                  "pm.test('status 201 or 409', () => pm.expect([201, 409]).to.include(pm.response.code));",
+                  "if (pm.response.code === 409) {",
+                  "  pm.test('details contain pg code 23505', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(JSON.stringify(body)).to.match(/23505/);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "fk violation 23503 -> 400 (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"FK Test\",\n  \"sku\": \"FK_TEST_001\",\n  \"price\": 50,\n  \"category_id\": 9999,\n  \"long_description\": \"test fk\"\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "category_id=9999 nie istnieje -> Postgres rzuca 23503, middleware mapuje na 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('details contain pg code 23503', () => {",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.match(/23503/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "param query prevents sql injection (PATCH /inventory/:sku)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 1\n}" },
+            "url": {
+              "raw": "{{inventory}}/inventory/p001'; DROP TABLE products;--",
+              "host": ["{{inventory}}"],
+              "path": ["inventory", "p001'; DROP TABLE products;--"]
+            },
+            "description": "Niebezpieczny SKU jest traktowany jako wartość $2, nie jako część SQL. Oczekiwane: 204, tabela products nadal istnieje."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. knex.js",
+      "item": [
+        {
+          "name": "dynamic WHERE no filters (GET /api/products)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Brak filtrów -> zwraca wszystkie produkty (200, tablica)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE filter category (GET /api/products?category=1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=1",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "category", "value": "1" }]
+            },
+            "description": "Filtr po category_id=1 (Earrings). Wszystkie zwrócone produkty mają category_id == 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('all items have category_id 1', () => {",
+                  "  const items = pm.response.json();",
+                  "  items.forEach(p => pm.expect(p.category_id).to.eql(1));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE filter maxPrice (GET /api/products?maxPrice=200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?maxPrice=200",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "maxPrice", "value": "200" }]
+            },
+            "description": "Filtr po cenie <=200. Każdy zwrócony produkt ma price <= 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('all items price <= 200', () => {",
+                  "  pm.response.json().forEach(p => pm.expect(Number(p.price)).to.be.at.most(200));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE combined filters (GET /api/products?category=2&maxPrice=500)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=2&maxPrice=500",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [
+                { "key": "category", "value": "2" },
+                { "key": "maxPrice", "value": "500" }
+              ]
+            },
+            "description": "Oba filtry razem. Wszystkie zwrócone Rings z ceną <=500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('all items category=2 and price<=500', () => {",
+                  "  pm.response.json().forEach(p => {",
+                  "    pm.expect(p.category_id).to.eql(2);",
+                  "    pm.expect(Number(p.price)).to.be.at.most(500);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE sql injection safe (GET /api/products)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=1' OR '1'='1",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "category", "value": "1' OR '1'='1" }]
+            },
+            "description": "Wstrzyknięty payload. Oczekiwane: 400 invalid_filter (walidacja na liczbę). Serwis nie pada."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('response mentions invalid_filter (wrapped by gateway in details)', () => {",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.match(/invalid_filter/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. sequelize v6",
+      "item": [
+        {
+          "name": "setup - sync cart (POST /cart/:userId/sync)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 2, \"price\": 100 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-user-1/sync", "host": ["{{inventory}}"], "path": ["cart", "test-user-1", "sync"] },
+            "description": "Setup do eager loading: tworzy koszyk z 1 linią. Oczekiwane: 200 OK."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "eager loading: cart with lines (GET /cart/:userId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/cart/test-user-1", "host": ["{{inventory}}"], "path": ["cart", "test-user-1"] },
+            "description": "Pobiera koszyk + CartLines jednym zapytaniem (include). Oczekiwane: 200 + pole CartLines."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('eager loaded CartLines field exists', () => pm.expect(pm.response.json()).to.have.property('CartLines'));",
+                  "pm.test('CartLines is array', () => pm.expect(pm.response.json().CartLines).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "validation CartLine: quantity must be >= 1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 0, \"price\": 100 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-user-1/sync", "host": ["{{inventory}}"], "path": ["cart", "test-user-1", "sync"] },
+            "description": "quantity=0 narusza validator min:1. Oczekiwane: 400 validation_error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "validation CartLine: priceAtEntry non-negative",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": -50 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-user-1/sync", "host": ["{{inventory}}"], "path": ["cart", "test-user-1", "sync"] },
+            "description": "Cena ujemna narusza validator min:0. Oczekiwane: 400 validation_error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('details mention priceAtEntry', () => {",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.match(/priceAtEntry/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "validation Cart: userId not empty",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": []\n}" },
+            "url": { "raw": "{{inventory}}/cart/%20/sync", "host": ["{{inventory}}"], "path": ["cart", "%20", "sync"] },
+            "description": "userId = ' ' (spacja). Validator notEmpty rzuca błąd. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup - rollback transaction baseline",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": 100 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-rollback/sync", "host": ["{{inventory}}"], "path": ["cart", "test-rollback", "sync"] },
+            "description": "Stan startowy: 1 valid line. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "managed transaction rolls back on validation error",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 2, \"quantity\": 5, \"price\": 200 },\n    { \"productId\": 3, \"quantity\": -1, \"price\": 50 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-rollback/sync", "host": ["{{inventory}}"], "path": ["cart", "test-rollback", "sync"] },
+            "description": "Druga linia ma quantity=-1. Transakcja rzuca i się wycofuje. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "rollback verification - cart still has baseline (GET /cart/test-rollback)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/cart/test-rollback", "host": ["{{inventory}}"], "path": ["cart", "test-rollback"] },
+            "description": "Po nieudanym sync koszyk ma stare linie. Oczekiwane: 1 linia z setupu (quantity:1, price:100)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('CartLines length is 1 (transaction rolled back)', () => {",
+                  "  pm.expect(pm.response.json().CartLines.length).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. prisma",
+      "item": [
+        {
+          "name": "migration history (GET /products/1 sanity check)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/1", "host": ["{{inventory}}"], "path": ["products", "1"] },
+            "description": "Sprawdzenie że produkt istnieje. Oczekiwane: 200 z polem stock>0."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has stock > 0', () => pm.expect(pm.response.json().stock).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: CREATE order via checkout (POST /checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-crud-1\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": 189.99 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Wywołuje prisma.order.create + tx.$queryRaw FOR UPDATE. Oczekiwane: 201 + orderId. Zapisuje orderId w env."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns orderId', () => pm.expect(body.orderId).to.be.a('number'));",
+                  "pm.collectionVariables.set('lastOrderId', body.orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: READ single (GET /orders/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "prisma.order.findUnique + include lines. Oczekiwane: 200 + lines tablica."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has lines array', () => pm.expect(pm.response.json().lines).to.be.an('array'));",
+                  "pm.test('status is PAID', () => pm.expect(pm.response.json().status).to.eql('PAID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: READ list (GET /orders)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders", "host": ["{{inventory}}"], "path": ["orders"] },
+            "description": "prisma.order.findMany. Oczekiwane: 200 + tablica zamówień, każde z lines."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: UPDATE via cancel (POST /orders/:id/cancel)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}/cancel", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}", "cancel"] },
+            "description": "prisma.order.update + tx.$executeRaw stock restore. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "verify cancelled (GET /orders/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "Po cancel status to CANCELLED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is CANCELLED', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: DELETE (DELETE /orders/:id)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "prisma.orderLine.deleteMany + prisma.order.delete. Oczekiwane: 204."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "after DELETE - returns 404 (GET /orders/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "Po usunięciu zwraca 404 not_found."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE non-existent returns 404 (P2025)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/999999", "host": ["{{inventory}}"], "path": ["orders", "999999"] },
+            "description": "Prisma rzuca P2025 -> mapowane na 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$queryRaw report (GET /analytics/orders-report)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/analytics/orders-report", "host": ["{{inventory}}"], "path": ["analytics", "orders-report"] },
+            "description": "prisma.$queryRaw z tagged template. Oczekiwane: 200 + tablica z totalOrders i revenue."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has totalOrders field', () => {",
+                  "  const arr = pm.response.json();",
+                  "  pm.expect(arr[0]).to.have.property('totalOrders');",
+                  "  pm.expect(arr[0]).to.have.property('revenue');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup oversell - set stock=1 via PATCH",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 198\n}" },
+            "url": { "raw": "{{inventory}}/inventory/p001", "host": ["{{inventory}}"], "path": ["inventory", "p001"] },
+            "description": "Setup: stock=1. Po wczesniejszych testach (PATCH qty=1 w folderze pg, CREATE qty=1, cancel) stock = 199. Odejmujemy 198 -> 1. Oczekiwane: 204."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$queryRaw FOR UPDATE prevents oversell (POST /checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-oversell\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 5, \"price\": 189.99 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Próba kupna 5 sztuk kiedy stock=1. SELECT FOR UPDATE łapie, throw, rollback. Oczekiwane: 409 conflict_oversell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('error is conflict_oversell', () => pm.expect(pm.response.json().error).to.eql('conflict_oversell'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup $executeRaw - checkout with qty 1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-cancel-stock\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": 189.99 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Po setup oversell stock=1. Checkout qty=1 -> stock 1->0, order PAID. orderId zapamietany w lastOrderId. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lastOrderId', pm.response.json().orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$executeRaw restores stock on cancel (POST /orders/:id/cancel)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}/cancel", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}", "cancel"] },
+            "description": "tx.$executeRaw UPDATE stock = stock + quantity. Oczekiwane: 200. Po tym GET /products/1 pokaże stock przywrócony."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. mongodb native driver",
+      "item": [
+        {
+          "name": "telemetry event - $push $inc $set (POST /telemetry/event)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"action\": \"product_viewed\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"ocean ring detail page visit\"\n}" },
+            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
+            "description": "Native driver, updateOne z 3 operatorami: $push (event do tablicy), $inc (eventCount), $set (lastAction). Upsert. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('upsert result returned', () => pm.expect(body).to.have.any.keys('acknowledged', 'modifiedCount', 'upsertedId'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "telemetry event - second call increments counter",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"action\": \"checkout_started\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"clicked checkout button on cart page\"\n}" },
+            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
+            "description": "Drugie wywołanie z tym samym userId. $inc zwiększa eventCount, $push dorzuca event, $set zmienia lastAction. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$text full-text search (GET /telemetry/search?q=...)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/telemetry/search?q=checkout",
+              "host": ["{{catalog}}"],
+              "path": ["telemetry", "search"],
+              "query": [{ "key": "q", "value": "checkout" }]
+            },
+            "description": "Wykorzystuje indeks tekstowy created on event_log. Oczekiwane: 200, count>=1, znajduje dokument z 'checkout' w action/details."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('count >= 1', () => pm.expect(pm.response.json().count).to.be.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$text search requires q (returns 400)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
+            "description": "Brak ?q -> walidacja zwraca 400 query_required."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is query_required', () => pm.expect(pm.response.json().error).to.eql('query_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart draft add - $push $inc $set (POST /cart-draft/:sid/add)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\",\n  \"variant\": \"diamond/size-7\",\n  \"price\": 189.99\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
+            "description": "Native driver upsert szkicu koszyka z 3 operatorami w jednym write. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart draft add second item",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p002\",\n  \"variant\": \"baby-pink\",\n  \"price\": 149.99\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
+            "description": "Drugi item w tym samym sessionId. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$pull removes item from draft (POST /cart-draft/:sid/remove)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "remove"] },
+            "description": "Operator $pull usuwa item z items[]. 4. operator zapisu (po $push/$inc/$set). Oczekiwane: 200 modified=1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('modified >= 1', () => pm.expect(pm.response.json().modified).to.be.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$pull on non-existing session returns 404",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/no-such-session/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "no-such-session", "remove"] },
+            "description": "Brak takiej sesji. Oczekiwane: 404 cart_draft_not_found."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. mongoose",
+      "item": [
+        {
+          "name": "setup - seed product detail + 2 approved reviews (POST /test/setup)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{catalog}}/test/setup", "host": ["{{catalog}}"], "path": ["test", "setup"] },
+            "description": "Tworzy ProductDetail(productId=1) i 2 approved reviews. Oczekiwane: 200 z tresctowym 'test data created successfully'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "populate: GET /reviews/:productId returns reviews with productDetail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/reviews/1", "host": ["{{catalog}}"], "path": ["reviews", "1"] },
+            "description": "Static findByProduct + virtual populate. Kazda recenzja ma osadzone productDetail. Oczekiwane: 200, productDetail.longDescription = 'Golden Necklace'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns array of reviews', () => pm.expect(body).to.be.an('array').that.is.not.empty);",
+                  "pm.test('productDetail is populated', () => {",
+                  "  pm.expect(body[0].productDetail).to.be.an('object');",
+                  "  pm.expect(body[0].productDetail.longDescription).to.eql('Golden Necklace');",
+                  "});",
+                  "pm.collectionVariables.set('lastReviewId', body[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "custom validator: rating must be integer (POST /reviews)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-frac\",\n  \"rating\": 4.5,\n  \"title\": \"Mixed\",\n  \"body\": \"this is a valid body length\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Rating 4.5 narusza custom Number.isInteger validator. Oczekiwane: 400 z wzmianka o 'integer'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error mentions integer rule', () => pm.expect(pm.response.text()).to.match(/integer/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "custom validator: title cannot be all uppercase",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-loud\",\n  \"rating\": 5,\n  \"title\": \"AMAZING DEAL\",\n  \"body\": \"this is a valid body length\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Title 'AMAZING DEAL' jest caly uppercase. Custom validator odrzuca. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error mentions uppercase rule', () => pm.expect(pm.response.text()).to.match(/uppercase/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "custom validator: body must have at least 3 words",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-short\",\n  \"rating\": 5,\n  \"title\": \"Great\",\n  \"body\": \"awesome\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Body z jednym slowem narusza min 3 words validator. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error mentions 3 words rule', () => pm.expect(pm.response.text()).to.match(/3 words/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "valid review with gallery (subdocs array) - POST /reviews",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-with-images\",\n  \"rating\": 5,\n  \"title\": \"Loved it\",\n  \"body\": \"truly exceptional craftsmanship and finish\",\n  \"gallery\": [\n    { \"url\": \"/img/review1.jpg\", \"caption\": \"front view\" },\n    { \"url\": \"https://example.com/review2.jpg\" }\n  ]\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Valid review z 2 zdjeciami w gallery (tablica subdokumentow). Oczekiwane: 201 + zachowane gallery."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('gallery has 2 entries', () => pm.expect(body.gallery).to.have.lengthOf(2));",
+                  "pm.test('status defaults to PENDING', () => pm.expect(body.status).to.eql('PENDING'));",
+                  "pm.collectionVariables.set('pendingReviewId', body._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "instance method approve() + moderationHistory (POST /reviews/:id/moderate)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"admin-1\",\n  \"reason\": \"meets quality guidelines\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews/{{pendingReviewId}}/moderate", "host": ["{{catalog}}"], "path": ["reviews", "{{pendingReviewId}}", "moderate"] },
+            "description": "Uzywa instance method review.approve() ktora pcha wpis do moderationHistory (subdoc array) i odpala pre-save hook. Oczekiwane: 200, status=APPROVED, moderationHistory ma 1 wpis."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('status changed to APPROVED', () => pm.expect(body.status).to.eql('APPROVED'));",
+                  "pm.test('moderationHistory has 1 entry', () => pm.expect(body.moderationHistory).to.have.lengthOf(1));",
+                  "pm.test('moderationHistory entry has moderatorId and reason', () => {",
+                  "  pm.expect(body.moderationHistory[0].moderatorId).to.eql('admin-1');",
+                  "  pm.expect(body.moderationHistory[0].reason).to.eql('meets quality guidelines');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "instance method reject() appends second history entry",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"reject\",\n  \"moderatorId\": \"admin-2\",\n  \"reason\": \"spam detected\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews/{{pendingReviewId}}/moderate", "host": ["{{catalog}}"], "path": ["reviews", "{{pendingReviewId}}", "moderate"] },
+            "description": "Drugi krok moderacji - przeglad. moderationHistory ma teraz 2 wpisy (audit trail). Oczekiwane: 200, status=REJECTED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('status changed to REJECTED', () => pm.expect(body.status).to.eql('REJECTED'));",
+                  "pm.test('moderationHistory has 2 entries (audit trail kept)', () => pm.expect(body.moderationHistory).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "pre-save hook updates updatedAt",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-hook\",\n  \"rating\": 5,\n  \"title\": \"Nice\",\n  \"body\": \"loved the product overall\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Po save updatedAt powinno byc ustawione przez pre('save') hook. Oczekiwane: 201, updatedAt obecne."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('updatedAt set by pre-save hook', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.updatedAt).to.exist;",
+                  "  pm.expect(new Date(body.updatedAt).getTime()).to.be.greaterThan(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. aggregation pipeline",
+      "item": [
+        {
+          "name": "setup - reset data + 2 approved reviews (POST /test/setup)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{catalog}}/test/setup", "host": ["{{catalog}}"], "path": ["test", "setup"] },
+            "description": "Tworzy ProductDetail(productId=1) + 2 APPROVED reviews (rating 5 i 4). Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation report - top products by rating (GET /analytics/average-ratings)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/analytics/average-ratings", "host": ["{{catalog}}"], "path": ["analytics", "average-ratings"] },
+            "description": "Pipeline: $match -> $group -> $lookup -> $unwind -> $sort -> $limit -> $project. Oczekiwane: 200 + tablica z productId, avgRating, reviewCount, productName."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns array', () => pm.expect(body).to.be.an('array'));",
+                  "pm.test('product 1 has avgRating 4.5 and 2 reviews', () => {",
+                  "  const p = body.find(r => r.productId === 1);",
+                  "  pm.expect(p).to.exist;",
+                  "  pm.expect(p.avgRating).to.eql(4.5);",
+                  "  pm.expect(p.reviewCount).to.eql(2);",
+                  "});",
+                  "pm.test('output has projected fields only', () => {",
+                  "  const p = body.find(r => r.productId === 1);",
+                  "  pm.expect(p).to.have.all.keys('productId', 'avgRating', 'reviewCount', 'productName');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation report respects ?limit (GET /analytics/average-ratings?limit=1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/analytics/average-ratings?limit=1",
+              "host": ["{{catalog}}"],
+              "path": ["analytics", "average-ratings"],
+              "query": [{ "key": "limit", "value": "1" }]
+            },
+            "description": "Stage $limit przepuszcza max 1 element. Oczekiwane: 200 + dokladnie 1 wiersz."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns at most 1 product', () => pm.expect(pm.response.json().length).to.be.at.most(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "explain plan shows first $match uses index (GET /analytics/average-ratings/explain)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/analytics/average-ratings/explain", "host": ["{{catalog}}"], "path": ["analytics", "average-ratings", "explain"] },
+            "description": "Mongo query planner pokazuje IXSCAN dla pierwszego $match. Oczekiwane: 200 + winningPlan z IXSCAN."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('winning plan uses index scan (IXSCAN) on status', () => {",
+                  "  const text = JSON.stringify(pm.response.json());",
+                  "  pm.expect(text).to.match(/IXSCAN/);",
+                  "  pm.expect(text).to.match(/status/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. microservices",
+      "item": [
+        {
+          "name": "all 3 services answer /health independently",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/health", "host": ["{{gateway}}"], "path": ["health"] },
+            "description": "Gateway zwraca 200 + service=api-gateway. Potwierdza ze gateway dziala niezaleznie od bazy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is api-gateway', () => pm.expect(pm.response.json().service).to.eql('api-gateway'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "inventory service answers /health on its own port",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/health", "host": ["{{inventory}}"], "path": ["health"] },
+            "description": "pg-service zwraca service=inventory-order-service. Dowod osobnego kontenera Node z wlasnym /health."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is inventory-order-service', () => pm.expect(pm.response.json().service).to.eql('inventory-order-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "catalog service answers /health on its own port",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/health", "host": ["{{catalog}}"], "path": ["health"] },
+            "description": "mongo-service zwraca service=catalog-analytics-service. Dowod osobnego kontenera Node."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is catalog-analytics-service', () => pm.expect(pm.response.json().service).to.eql('catalog-analytics-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway aggregates pg + mongo data (GET /api/products/1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products/1", "host": ["{{gateway}}"], "path": ["api", "products", "1"] },
+            "description": "Gateway robi 2 HTTP calls: pg-service po base data + mongo-service po details/variants, agreguje w jeden response. Oczekiwane: 200 z polami z OBYDWU baz."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has pg fields (id, sku, price, stock)', () => {",
+                  "  pm.expect(body).to.have.property('id');",
+                  "  pm.expect(body).to.have.property('sku');",
+                  "  pm.expect(body).to.have.property('price');",
+                  "  pm.expect(body).to.have.property('stock');",
+                  "});",
+                  "pm.test('has mongo fields (variants, gallery)', () => {",
+                  "  pm.expect(body).to.have.property('variants').that.is.an('array');",
+                  "  pm.expect(body).to.have.property('gallery').that.is.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gateway hybrid saga - creates product in BOTH databases (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Microservice Test Product\",\n  \"sku\": \"MS_TEST_001\",\n  \"price\": 99.99,\n  \"category_id\": 1,\n  \"long_description\": \"created via gateway saga\",\n  \"variants\": [\n    { \"id\": \"vms1\", \"color\": \"Silver\", \"stock\": 50, \"size\": [\"S\"] }\n  ]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Gateway koordynuje saga: step 1 POST do pg-service, step 2 POST do mongo-service. Jesli step 2 padnie - kompensacja w pg. Oczekiwane: 201 z id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('returns id from pg-service', () => pm.expect(pm.response.json().id).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "no DB cross-talk: pg-service does NOT expose mongo endpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/product-details/1", "host": ["{{inventory}}"], "path": ["product-details", "1"] },
+            "description": "pg-service nie powinien znac endpointu z mongo-service. Oczekiwane: 404. Dowod podzialu per silnik BD."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404 (endpoint does not exist on pg-service)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "no DB cross-talk: mongo-service does NOT expose pg endpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/checkout", "host": ["{{catalog}}"], "path": ["checkout"] },
+            "description": "mongo-service nie powinien znac endpointu /checkout (pg-service-only). Oczekiwane: 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404 (endpoint does not exist on mongo-service)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. hybrid architecture",
+      "item": [
+        {
+          "name": "hybrid create success - product exists in BOTH databases (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Hybrid Saga Product\",\n  \"sku\": \"HYBRID_OK_001\",\n  \"price\": 75.50,\n  \"category_id\": 1,\n  \"long_description\": \"saga full success scenario\",\n  \"variants\": [\n    { \"id\": \"hv1\", \"color\": \"Gold\", \"stock\": 10, \"size\": [\"S\"] }\n  ]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Saga: PG insert -> Mongo insert -> 201. Zapisuje id w hybridProductId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returned id is number', () => pm.expect(body.id).to.be.a('number'));",
+                  "pm.collectionVariables.set('hybridProductId', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid product visible in PG (GET /products/:id via inventory)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/{{hybridProductId}}", "host": ["{{inventory}}"], "path": ["products", "{{hybridProductId}}"] },
+            "description": "Po Saga step 1 produkt ma istniec w PG. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('sku matches', () => pm.expect(pm.response.json().sku).to.eql('HYBRID_OK_001'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid product visible in Mongo (GET /product-details/:id via catalog)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/{{hybridProductId}}", "host": ["{{catalog}}"], "path": ["product-details", "{{hybridProductId}}"] },
+            "description": "Po Saga step 2 detal ma istniec w Mongo. Oczekiwane: 200 + variants."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has variants from saga step 2', () => pm.expect(pm.response.json().variants).to.be.an('array').with.lengthOf.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "compensation triggered - duplicate sku rolls back PG insert (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Rollback Probe\",\n  \"sku\": \"HYBRID_OK_001\",\n  \"price\": 1,\n  \"category_id\": 1,\n  \"long_description\": \"forces 23505 unique violation in pg\",\n  \"variants\": []\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Powtorny insert na to samo sku -> PG zwraca 409 unique violation. Saga nie wykonuje step 2, kompensacja nie jest potrzebna (PG sam odrzucil). Oczekiwane: 409 z { error, code, details }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('unified envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('error indicates conflict', () => pm.expect(body.error).to.match(/conflict/));",
+                  "pm.test('code matches HTTP status', () => pm.expect(body.code).to.eql(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "compensation triggered - mongo step fails (duplicate colors) rolls back PG",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Mongo Validator Probe\",\n  \"sku\": \"HYBRID_ROLLBACK_002\",\n  \"price\": 5,\n  \"category_id\": 1,\n  \"long_description\": \"step 1 ok in PG, step 2 fails because variant colors duplicate\",\n  \"variants\": [\n    { \"id\": \"vA\", \"color\": \"Red\", \"stock\": 1 },\n    { \"id\": \"vB\", \"color\": \"Red\", \"stock\": 1 }\n  ]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Step 1 (PG insert) sie powiedzie, step 2 (Mongo) padnie na custom validatorze 'variants must have unique colors'. Gateway wykonuje kompensacje (DELETE w PG). Oczekiwane: 4xx z { error, code, details } i X-Rollback-Status: success."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx (mongo validation failed)', () => pm.expect(pm.response.code).to.be.within(400, 499));",
+                  "const body = pm.response.json();",
+                  "pm.test('response has unified envelope { error, code, details }', () => {",
+                  "  pm.expect(body).to.include.all.keys('error', 'code', 'details');",
+                  "});",
+                  "pm.test('rollback status header is success', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Rollback-Status')).to.eql('success');",
+                  "});",
+                  "pm.test('details mentions rollbackStatus', () => {",
+                  "  pm.expect(JSON.stringify(body.details)).to.match(/rollbackStatus/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "verify rollback - sku does NOT exist in PG after compensation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/HYBRID_ROLLBACK_002", "host": ["{{inventory}}"], "path": ["products", "HYBRID_ROLLBACK_002"] },
+            "description": "Po kompensacji nowy SKU nie powinien byc w PG. Oczekiwane: 404 (DELETE saga wykonal sie poprawnie)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404 (PG row was rolled back)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: zod validation 400 (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"\",\n  \"price\": -5\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Zod odrzuca payload. Oczekiwane: 400 z { error: 'validation_error', code: 400, details: [...] }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('exact envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code is 400', () => pm.expect(body.code).to.eql(400));",
+                  "pm.test('error is validation_error', () => pm.expect(body.error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: gateway not_found 404 (GET /api/products/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products/999999", "host": ["{{gateway}}"], "path": ["api", "products", "999999"] },
+            "description": "Nieistniejacy produkt. Oczekiwane: 404 z unified envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('error is not_found', () => pm.expect(body.error).to.eql('not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: inventory 404 propagates same shape (GET /products/:id direct)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/999999", "host": ["{{inventory}}"], "path": ["products", "999999"] },
+            "description": "Inventory tez musi zwracac unified envelope. Oczekiwane: 404 z { error, code, details }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code is 404 number', () => pm.expect(body.code).to.eql(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: catalog 400 query_required (GET /telemetry/search)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
+            "description": "Catalog tez. Brak ?q -> 400 z unified envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('error is query_required', () => pm.expect(body.error).to.eql('query_required'));",
+                  "pm.test('code is 400', () => pm.expect(body.code).to.eql(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12. openapi contract",
+      "item": [
+        {
+          "name": "swagger ui is served at /api-docs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs/", "host": ["{{gateway}}"], "path": ["api-docs", ""] },
+            "description": "Swagger UI musi byc dostepne dla recenzenta pod /api-docs."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('content-type is html', () => pm.expect(pm.response.headers.get('Content-Type')).to.match(/text\\/html/));",
+                  "pm.test('html contains Swagger UI', () => pm.expect(pm.response.text()).to.match(/Swagger UI/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "raw openapi spec is downloadable as JSON (GET /api-docs.json)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Publikowalna specyfikacja - mozna ja zaciagnac curl'em i karmic postmanem / openapi-generator'em."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('content-type is application/json', () => pm.expect(pm.response.headers.get('Content-Type')).to.match(/application\\/json/));",
+                  "const spec = pm.response.json();",
+                  "pm.test('is openapi 3.x', () => pm.expect(spec.openapi).to.match(/^3\\./));",
+                  "pm.test('has info.title and info.version', () => { pm.expect(spec.info.title).to.be.a('string'); pm.expect(spec.info.version).to.be.a('string'); });",
+                  "pm.test('declares servers', () => pm.expect(spec.servers).to.be.an('array').that.is.not.empty);",
+                  "pm.test('declares tags', () => pm.expect(spec.tags).to.be.an('array').that.is.not.empty);",
+                  "pm.test('defines reusable schemas (Error, Product, Cart, ...)', () => {",
+                  "  pm.expect(spec.components.schemas).to.include.all.keys('Error', 'Product', 'ProductCreateRequest', 'Cart', 'CartSyncRequest', 'CheckoutRequest');",
+                  "});",
+                  "pm.test('Error schema is the unified envelope', () => {",
+                  "  const props = spec.components.schemas.Error.properties;",
+                  "  pm.expect(props).to.include.all.keys('error', 'code', 'details');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "spec lists every public endpoint",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Recenzent moze sprawdzic ze kazdy publiczny endpoint jest udokumentowany."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const spec = pm.response.json();",
+                  "const expected = [",
+                  "  '/health',",
+                  "  '/api/products',",
+                  "  '/api/products/{id}',",
+                  "  '/api/cart/{userId}',",
+                  "  '/api/cart/{userId}/sync',",
+                  "  '/api/checkout',",
+                  "  '/api/orders/{orderId}/cancel'",
+                  "];",
+                  "expected.forEach(p => {",
+                  "  pm.test(`path ${p} is documented`, () => pm.expect(spec.paths).to.have.property(p));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/products has request example and 201/4xx responses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Wymaganie 12: kazdy endpoint ma przykladowe zadania i odpowiedzi."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const spec = pm.response.json();",
+                  "const op = spec.paths['/api/products'].post;",
+                  "pm.test('summary is present', () => pm.expect(op.summary).to.be.a('string').that.is.not.empty);",
+                  "pm.test('request body has example', () => {",
+                  "  pm.expect(op.requestBody.content['application/json'].example).to.be.an('object');",
+                  "  pm.expect(op.requestBody.content['application/json'].example.sku).to.be.a('string');",
+                  "});",
+                  "pm.test('response 201 documented', () => pm.expect(op.responses['201']).to.be.an('object'));",
+                  "pm.test('response 400 documented (Zod)', () => pm.expect(op.responses['400']).to.be.an('object'));",
+                  "pm.test('response 409 documented (saga conflict)', () => pm.expect(op.responses['409']).to.be.an('object'));",
+                  "pm.test('response 500 documents X-Rollback-Status header', () => {",
+                  "  pm.expect(op.responses['500'].headers['X-Rollback-Status']).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/checkout documents oversell 409 and example body",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Najwazniejszy endpoint (saga + transakcja) ma udokumentowany 409 oversell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const spec = pm.response.json();",
+                  "const op = spec.paths['/api/checkout'].post;",
+                  "pm.test('request example shows userId + items', () => {",
+                  "  const ex = op.requestBody.content['application/json'].example;",
+                  "  pm.expect(ex.userId).to.be.a('string');",
+                  "  pm.expect(ex.items).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('201 example returns orderId', () => {",
+                  "  pm.expect(op.responses['201'].content['application/json'].example).to.have.property('orderId');",
+                  "});",
+                  "pm.test('409 response is the conflict_oversell case', () => {",
+                  "  const ex = op.responses['409'].content['application/json'].example;",
+                  "  pm.expect(JSON.stringify(ex)).to.match(/conflict_oversell/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "live request matches documented example - POST /api/checkout (validation error)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"contract-check\"\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Live verification - request bez 'items' musi zwrocic 400 z envelope tak jak opisuje spec."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('matches documented Error schema (error, code, details)', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code equals 400 number', () => pm.expect(body.code).to.eql(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "13. automated tests (critical paths)",
+      "item": [
+        {
+          "name": "health: api-gateway is reachable (mirrors e2e step 0)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/health", "host": ["{{gateway}}"], "path": ["health"] },
+            "description": "Smoke: rownolegly do supertestu - sprawdza ze gateway zyje."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is api-gateway', () => pm.expect(pm.response.json().service).to.eql('api-gateway'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 1: snapshot initial stock (mirrors e2e step 1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Krytyczna sciezka: lista produktow + zapamietanie stocku do dalszych testow."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const list = pm.response.json();",
+                  "pm.test('is array', () => pm.expect(list).to.be.an('array').that.is.not.empty);",
+                  "const product = list.find(p => p.id === 1);",
+                  "pm.test('product 1 exists', () => pm.expect(product).to.be.an('object'));",
+                  "pm.collectionVariables.set('e2e_initial_stock', product.stock);",
+                  "pm.collectionVariables.set('e2e_test_user', 'e2e-postman');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 2: oversell blocked with 409 (mirrors e2e step 2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{e2e_test_user}}\",\n  \"items\": [{ \"productId\": 1, \"quantity\": 99999, \"price\": 120 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Zamowienie wiekszej ilosci niz dostepny stock - musi byc 409 z envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 3: valid checkout 201 (mirrors e2e step 3)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{e2e_test_user}}\",\n  \"items\": [{ \"productId\": 1, \"quantity\": 1, \"price\": 120 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Pozytywny checkout - zapisuje orderId do dalszych krokow."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('success true', () => pm.expect(body.success).to.be.true);",
+                  "pm.test('orderId returned', () => pm.expect(body.orderId).to.be.a('number'));",
+                  "pm.collectionVariables.set('e2e_order_id', body.orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 4: stock decreased by exact qty (mirrors e2e step 4)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Stock po checkout musi byc dokladnie initial - 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const list = pm.response.json();",
+                  "const product = list.find(p => p.id === 1);",
+                  "const expected = Number(pm.collectionVariables.get('e2e_initial_stock')) - 1;",
+                  "pm.test(`stock decreased to ${expected}`, () => pm.expect(product.stock).to.eql(expected));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 5: cancel restores stock (mirrors e2e step 5)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/orders/{{e2e_order_id}}/cancel", "host": ["{{gateway}}"], "path": ["api", "orders", "{{e2e_order_id}}", "cancel"] },
+            "description": "Cancel -> stock wraca do initial."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 5b: stock restored to initial value",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const list = pm.response.json();",
+                  "const product = list.find(p => p.id === 1);",
+                  "const expected = Number(pm.collectionVariables.get('e2e_initial_stock'));",
+                  "pm.test(`stock restored to ${expected}`, () => pm.expect(product.stock).to.eql(expected));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 6: aggregated single product PG+Mongo (mirrors e2e step 6)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products/1", "host": ["{{gateway}}"], "path": ["api", "products", "1"] },
+            "description": "Agregacja PG + Mongo musi zwrocic id, sku, price, variants[], gallery[]."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has merged fields', () => {",
+                  "  pm.expect(body.id).to.eql(1);",
+                  "  pm.expect(body.sku).to.be.a('string');",
+                  "  pm.expect(Number(body.price)).to.be.a('number').and.not.NaN;",
+                  "  pm.expect(body.variants).to.be.an('array');",
+                  "  pm.expect(body.gallery).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 7: validation rejects bad payload (mirrors e2e step 9)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"\",\n  \"sku\": \"BAD\",\n  \"price\": -50\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 8: cart sync round trip (mirrors e2e step 10)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [{ \"productId\": 1, \"quantity\": 2, \"price\": 120 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/e2e-cart-user/sync", "host": ["{{gateway}}"], "path": ["api", "cart", "e2e-cart-user", "sync"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 8b: cart can be read back",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/cart/e2e-cart-user", "host": ["{{gateway}}"], "path": ["api", "cart", "e2e-cart-user"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('lines is array with content', () => { pm.expect(body.lines).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 9: unknown user cart returns safe default (mirrors e2e step 11)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/cart/this-user-does-not-exist-xyz", "host": ["{{gateway}}"], "path": ["api", "cart", "this-user-does-not-exist-xyz"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns empty default cart', () => pm.expect(pm.response.json()).to.eql({ lines: [], totalPrice: 0 }));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

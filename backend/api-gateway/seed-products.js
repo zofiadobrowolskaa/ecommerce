@@ -1,9 +1,17 @@
+// domain seeder for the microservices stack
+// runs as a one-shot docker compose service after the gateway is healthy
+// each POST /api/products triggers the hybrid saga: pg-service writes the base
+// row to Postgres, mongo-service writes the extended document to MongoDB
+
 const fs = require('fs');
 
-// maps legacy category names to PostgreSQL category IDs
+// gateway base url; defaults to localhost so the script also works from the host
+// when run as a docker compose service it points to api-gateway:3000 via env
+const GATEWAY_URL = process.env.SEED_GATEWAY_URL || 'http://localhost:3000';
+
 const categoryMap = {
-  "Rings": 1,
-  "Earrings": 2,
+  "Earrings": 1,
+  "Rings": 2,
   "Necklaces": 3,
   "Bracelets": 4
 };
@@ -39,7 +47,8 @@ const seedProducts = async () => {
         }))
       };
 
-      const response = await fetch('http://localhost:3000/api/products', {
+      // post one product at a time so the gateway saga runs per product
+      const response = await fetch(`${GATEWAY_URL}/api/products`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(productDataToSave)
@@ -48,8 +57,9 @@ const seedProducts = async () => {
       if (response.ok) {
         console.log(`success: Added ${product.name}`);
       } else {
-        const error = await response.json();
-        console.log(`error for ${product.name}:\n`, JSON.stringify(error.details, null, 2));
+        // gateway returns details inside an envelope; pretty-print for diagnostics
+        const error = await response.json().catch(() => ({}));
+        console.log(`error for ${product.name}:`, JSON.stringify(error, null, 2));
       }
     }
 

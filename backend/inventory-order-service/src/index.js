@@ -9,6 +9,10 @@ const prisma = new PrismaClient();
 const app = express();
 app.use(express.json());
 
+// unified error response helper: every failure responds with { error, code, details }
+const sendError = (res, status, error, details) =>
+  res.status(status).json({ error, code: status, details: details ?? null });
+
 // simple healthcheck endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'inventory-order-service' });
@@ -17,15 +21,33 @@ app.get('/health', (req, res) => {
 // CATALOG (KNEX)
 
 // dynamic filtering endpoint
-app.get('/products', async (req, res) => {
-  const { category, maxPrice } = req.query;
-  // dynamic where builder
-  const query = knex('products').where(builder => {
-    if (category) builder.where('category_id', category);
-    if (maxPrice) builder.where('price', '<=', maxPrice);
-  });
-  const products = await query;
-  res.json(products);
+app.get('/products', async (req, res, next) => {
+  try {
+    const { category, maxPrice } = req.query;
+
+    // coerce filters to numbers up-front so malformed values cannot reach SQL
+    const categoryId = category !== undefined ? Number(category) : undefined;
+    const maxPriceNum = maxPrice !== undefined ? Number(maxPrice) : undefined;
+
+    // reject non-numeric filters as 400 instead of crashing on a Postgres cast error
+    if (category !== undefined && !Number.isFinite(categoryId)) {
+      return sendError(res, 400, 'invalid_filter', 'category must be numeric');
+    }
+    if (maxPrice !== undefined && !Number.isFinite(maxPriceNum)) {
+      return sendError(res, 400, 'invalid_filter', 'maxPrice must be numeric');
+    }
+
+    // dynamic where builder (no string concatenation, all values bound as parameters)
+    const query = knex('products').where(builder => {
+      if (categoryId !== undefined) builder.where('category_id', categoryId);
+      if (maxPriceNum !== undefined) builder.where('price', '<=', maxPriceNum);
+    });
+    const products = await query;
+    res.json(products);
+  } catch (err) {
+    // forward unexpected errors to global handler (pgErrorMap) instead of crashing
+    next(err);
+  }
 });
 
 // get single product by id for gateway aggregation
@@ -45,7 +67,7 @@ app.get('/products/:id', async (req, res, next) => {
     }
 
     if (!product) {
-      return res.status(404).json({ error: 'not_found' });
+      return sendError(res, 404, 'not_found', `product ${id} not found`);
     }
 
     res.json(product);
@@ -63,9 +85,14 @@ app.post('/internal/products', async (req, res, next) => {
 });
 
 // rollback endpoint
-app.delete('/internal/products/:id', async (req, res) => {
-  await knex('products').where('id', req.params.id).del();
-  res.sendStatus(204);
+app.delete('/internal/products/:id', async (req, res, next) => {
+  try {
+    await knex('products').where('id', req.params.id).del();
+    res.sendStatus(204);
+  } catch (err) {
+    // delegate to global handler instead of leaving the promise unhandled
+    next(err);
+  }
 });
 
 // INVENTORY (PG DRIVER)
@@ -93,31 +120,32 @@ app.get('/cart/:userId', async (req, res) => {
       where: { userId: req.params.userId, status: 'OPEN' },
       include: [CartLine] // eager loading implementation
     });
-    if (!cart) return res.status(404).json({ error: 'cart not found' });
+    if (!cart) return sendError(res, 404, 'cart_not_found', `no open cart for user ${req.params.userId}`);
     res.json(cart);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, 'internal_server_error', err.message);
   }
 });
 
-// sync cart items to server state
+// sync cart items to server state (managed transaction with model validation)
 app.post('/cart/:userId/sync', async (req, res) => {
   const { items } = req.body;
   try {
-    // managed transaction
+    // managed transaction: commits on resolve, rolls back on throw
     await sequelize.transaction(async (t) => {
       let cart = await Cart.findOne({ where: { userId: req.params.userId, status: 'OPEN' }, transaction: t });
       if (!cart) cart = await Cart.create({ userId: req.params.userId }, { transaction: t });
-      
-      // clear old state
+
+      // clear old state before re-applying client state
       await CartLine.destroy({ where: { CartId: cart.id }, transaction: t });
       let total = 0;
-      
+
       for (const item of items) {
         total += item.price * item.quantity;
         // safely extract number from frontend IDs (e.g. "p001" -> 1)
         const numericId = parseInt(String(item.productId).replace(/\D/g, '')) || 1;
-        
+
+        // CartLine.create runs model validators (quantity >= 1, price >= 0, ...)
         await CartLine.create({
           CartId: cart.id,
           productId: numericId,
@@ -126,10 +154,17 @@ app.post('/cart/:userId/sync', async (req, res) => {
         }, { transaction: t });
       }
       cart.totalPrice = total;
+      // Cart.save also runs model validators (totalPrice >= 0)
       await cart.save({ transaction: t });
     });
     res.sendStatus(200);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    // map sequelize validation errors to 400 so the client gets actionable feedback
+    if (e.name === 'SequelizeValidationError' || e.name === 'SequelizeUniqueConstraintError') {
+      return sendError(res, 400, 'validation_error', e.errors.map(err => ({ field: err.path, message: err.message })));
+    }
+    sendError(res, 500, 'internal_server_error', e.message);
+  }
 });
 
 // ORDERS AND CHECKOUT SAGA (PRISMA)
@@ -183,8 +218,10 @@ app.post('/checkout', async (req, res) => {
 
     res.status(201).json({ orderId: order.id });
   } catch (err) {
-    if (err.message.includes('409')) return res.status(409).json({ error: 'conflict_oversell' });
-    res.status(500).json({ error: err.message });
+    if (err.message.includes('409')) {
+      return sendError(res, 409, 'conflict_oversell', 'one or more items exceed available stock');
+    }
+    sendError(res, 500, 'internal_server_error', err.message);
   }
 });
 
@@ -195,16 +232,66 @@ app.post('/orders/:id/cancel', async (req, res) => {
     await prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id: orderId }, include: { lines: true } });
       if (!order) throw new Error('not_found');
-      
+
       await tx.order.update({ where: { id: orderId }, data: { status: 'CANCELLED' }});
-      
+
       // return stock to inventory
       for (const line of order.lines) {
         await tx.$executeRaw`UPDATE products SET stock = stock + ${line.quantity} WHERE sku = ${line.sku}`;
       }
     });
     res.sendStatus(200);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    if (e.message === 'not_found') return sendError(res, 404, 'not_found', `order ${req.params.id} not found`);
+    sendError(res, 500, 'internal_server_error', e.message);
+  }
+});
+
+// list all orders using prisma typed model api (R in CRUD)
+app.get('/orders', async (req, res, next) => {
+  try {
+    // findMany with include exercises eager loading via prisma's typed api
+    const orders = await prisma.order.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { lines: true }
+    });
+    res.json(orders);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// get single order by id using prisma typed model api (R in CRUD)
+app.get('/orders/:id', async (req, res, next) => {
+  try {
+    const orderId = parseInt(req.params.id);
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { lines: true }
+    });
+    if (!order) return sendError(res, 404, 'not_found', `order ${req.params.id} not found`);
+    res.json(order);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// delete order using prisma typed model api (D in CRUD)
+// cascades to lines via the relation
+app.delete('/orders/:id', async (req, res, next) => {
+  try {
+    const orderId = parseInt(req.params.id);
+    // delete child lines first to satisfy fk constraint, then delete header
+    await prisma.$transaction([
+      prisma.orderLine.deleteMany({ where: { orderId } }),
+      prisma.order.delete({ where: { id: orderId } })
+    ]);
+    res.sendStatus(204);
+  } catch (err) {
+    // prisma throws P2025 when record to delete is not found
+    if (err.code === 'P2025') return sendError(res, 404, 'not_found', `order ${req.params.id} not found`);
+    next(err);
+  }
 });
 
 // prisma $queryRaw (tagged template)
@@ -226,7 +313,7 @@ app.get('/analytics/orders-report', async (req, res) => {
 
     res.json(formattedReport);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, 'internal_server_error', err.message);
   }
 });
 
@@ -235,6 +322,11 @@ app.get('/analytics/orders-report', async (req, res) => {
 app.use(pgErrorMap);
 
 const PORT = process.env.PORT || 3001;
+
+// last-resort safety net: log unhandled rejections instead of letting Node kill the container
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandled_rejection:', reason);
+});
 
 sequelize.sync().then(() => {
   app.listen(PORT, () => console.log(`inventory service running on port ${PORT}`));

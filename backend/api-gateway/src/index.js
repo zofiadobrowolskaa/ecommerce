@@ -25,17 +25,28 @@ app.get('/health', (req, res) => {
 // mount openapi swagger ui
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-// service urls from docker network
-const INVENTORY_SERVICE = 'http://pg-service:3001';
-const CATALOG_SERVICE = 'http://mongo-service:3002';
+// expose raw openapi 3.0 contract as downloadable json
+// makes the spec "publishable" - other tools (postman, openapi-generator, redoc) can ingest it
+app.get('/api-docs.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.status(200).send(JSON.stringify(swaggerDocument, null, 2));
+});
 
-// helper for standardized errors
+// service urls injected via env so the gateway can be reconfigured without code changes
+// defaults point to docker compose service names on the internal network
+const INVENTORY_SERVICE = process.env.INVENTORY_SERVICE_URL || 'http://pg-service:3001';
+const CATALOG_SERVICE = process.env.CATALOG_SERVICE_URL || 'http://mongo-service:3002';
+
+// unified error envelope used by every gateway response on failure
+// shape contract: { error: string, code: number, details: any }
+const sendError = (res, status, error, details) => {
+  res.status(status).json({ error, code: status, details: details ?? null });
+};
+
+// adapter for downstream service errors (axios) keeping the same contract
 const handleError = (res, err, defaultError = 'gateway_error') => {
-  res.status(err.response?.status || 500).json({
-    error: defaultError,
-    code: err.response?.status || 500,
-    details: err.response?.data || 'an unexpected error occurred'
-  });
+  const status = err.response?.status || 500;
+  sendError(res, status, defaultError, err.response?.data || err.message || 'an unexpected error occurred');
 };
 
 // PRODUCTS HYBRID SAGA 
@@ -45,6 +56,12 @@ const handleError = (res, err, defaultError = 'gateway_error') => {
 app.post('/api/products', validate(productSchema), async (req, res) => {
   // extended payload: includes variants, materials, gallery
   const { name, sku, price, category_id, long_description, specs, variants, aboutMaterials, gallery } = req.body;
+
+  // aggregate variant stocks so postgres products.stock reflects the real available inventory
+  // (variants are kept in mongo as denormalized data; pg holds the transactional total)
+  const aggregatedStock = Array.isArray(variants)
+    ? variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
+    : 0;
 
   // will store ID of product created in postgres (needed for step 2 and rollback)
   let createdProductId = null;
@@ -56,7 +73,7 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
       sku,
       price,
       category_id,
-      stock: 0
+      stock: aggregatedStock
     });
 
     // handle different response shapes (id can be nested or primitive)
@@ -85,25 +102,32 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
     // track rollback attempt status for observability/debugging
     let rollbackStatus = 'not_attempted';
 
-    // compensation: if step 2 fails, remove product from postgres
+    // compensation: if step 2 (mongo) failed, undo step 1 (pg) by deleting the row
     if (createdProductId) {
       try {
         await axios.delete(`${INVENTORY_SERVICE}/internal/products/${createdProductId}`);
         rollbackStatus = 'success';
       } catch (rbError) {
-        // rollback failure should be visible (system is now inconsistent)
+        // rollback failure leaves the system inconsistent - emit a loud log entry
         rollbackStatus = 'failed';
+        console.error('saga_compensation_failed', { productId: createdProductId, error: rbError.message });
       }
     }
 
-    // return error with rollback status, preserving original status code
+    // expose rollback outcome via a response header so the body stays in the
+    // strict { error, code, details }
+    res.setHeader('X-Rollback-Status', rollbackStatus);
+
     const statusCode = error.response?.status || 500;
-    res.status(statusCode).json({
-      error: statusCode === 409 ? 'conflict' : 'hybrid_transaction_failed',
-      code: statusCode,
-      details: error.response?.data || error.message,
-      rollback_status: rollbackStatus
-    });
+    sendError(
+      res,
+      statusCode,
+      statusCode === 409 ? 'conflict' : 'hybrid_transaction_failed',
+      {
+        message: error.response?.data || error.message,
+        rollbackStatus
+      }
+    );
   }
 });
 
@@ -152,7 +176,18 @@ app.get('/api/cart/:userId', async (req, res) => {
   try {
     // fetch cart from inventory service (source of truth)
     const r = await axios.get(`${INVENTORY_SERVICE}/cart/${req.params.userId}`);
-    res.json(r.data);
+
+    // sequelize returns the association name verbatim (CartLines) - normalize
+    // to a stable client contract { id, userId, status, totalPrice, lines }
+    // so the api shape never depends on the orm
+    const raw = r.data || {};
+    res.json({
+      id: raw.id,
+      userId: raw.userId,
+      status: raw.status,
+      totalPrice: Number(raw.totalPrice) || 0,
+      lines: raw.CartLines || raw.cartLines || raw.lines || []
+    });
   } catch (e) {
     // if cart does not exist yet, return empty state instead of error
     if (e.response?.status === 404) {
@@ -227,15 +262,16 @@ app.get('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const inventoryUrl = `http://pg-service:3001/products/${id}`;
+    // build url from env-configured service base (consistent with axios calls above)
+    const inventoryUrl = `${INVENTORY_SERVICE}/products/${id}`;
 
-    // fetch base product first (may resolve SKU → numeric ID)
+    // fetch base product first (may resolve SKU -> numeric ID)
     const invResponse = await fetch(inventoryUrl);
 
     // handle inventory errors (source of truth)
     if (!invResponse.ok) {
       if (invResponse.status === 404) {
-        return res.status(404).json({ error: 'not_found', details: 'product not found' });
+        return sendError(res, 404, 'not_found', 'product not found');
       }
       throw new Error(`inventory service error: status ${invResponse.status}`);
     }
@@ -244,8 +280,8 @@ app.get('/api/products/:id', async (req, res) => {
     const inventoryData = await invResponse.json();
     const numericId = inventoryData.id;
 
-    // use numeric ID for catalog lookup (Mongo uses PG-generated IDs)
-    const catalogUrl = `http://mongo-service:3002/product-details/${numericId}`;
+    // catalog lookup also uses env-configured base url
+    const catalogUrl = `${CATALOG_SERVICE}/product-details/${numericId}`;
 
     // catalog is optional → fallback if unavailable
     const catResponse = await fetch(catalogUrl).catch(() => null);
@@ -268,8 +304,8 @@ app.get('/api/products/:id', async (req, res) => {
 
     res.status(200).json(aggregatedProduct);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'internal_server_error' });
+    console.error('product_aggregation_failed', error.message);
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -278,12 +314,8 @@ app.use((err, req, res, next) => {
   // log internal error (should be replaced with structured logging in production)
   console.error('system_error:', err.message);
 
-  // do not leak internals to client
-  res.status(500).json({
-    error: 'internal_server_error',
-    code: 500,
-    details: 'unexpected critical error'
-  });
+  // do not leak internals to client; respond in the unified { error, code, details } shape
+  sendError(res, 500, 'internal_server_error', 'unexpected critical error');
 });
 
 const PORT = 3000;
