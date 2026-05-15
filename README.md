@@ -219,6 +219,16 @@ Every rule below is enforced by the database layer **and** the REST API. The tab
 | BR5 | **Unified error contract.** Every failure crosses the wire as the same envelope. | `{ error: string, code: number, details: any }` returned by all three services. PG codes (`23505`, `23503`) and Mongo codes (`11000`, `ValidationError`, `CastError`) are mapped to HTTP + a stable domain string by middleware — no raw driver objects ever leave the process. | `api-gateway/src/index.js` (`sendError`), `inventory-order-service/src/middleware/errorMiddleware.js`, `catalog-analytics-service/src/middleware/mongoErrorMiddleware.js` |
 
 
+## 🔁 Hybrid Architecture
+The system performs two cross-store writes that go through the **Saga Pattern** with compensation. The gateway orchestrates both - there is no shared transaction manager between PG and Mongo.
+
+| # | Hybrid flow | Forward path | Compensation on failure |
+|---|---|---|---|
+| H1 | **Product creation** (`POST /api/products`) | Insert `products` row (PG) → insert `variants` rows (PG) → insert `productdetails` document (Mongo) | If the Mongo step fails, `DELETE` the PG row (variants cascade). `X-Rollback-Status: success/failed` |
+| H2 | **Review moderation** (`POST /api/reviews/:reviewId/moderate`) | Apply decision in Mongo (`Review.status` + `moderationHistory` append) → update the denormalized `products.review_count` counter in PG | If the PG step fails, revert the moderation in Mongo (approve → reject and vice versa). `X-Rollback-Status: success/failed` |
+
+Both responses are always shaped as the unified `{ error, code, details }` envelope; the rollback outcome travels in the `X-Rollback-Status` header so the body contract stays strict.
+
 ## 🛡️ Security & Threat Mitigation
 
 The backend implements a defense-in-depth approach. The table below maps concrete threats to the layer that mitigates them.

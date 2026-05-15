@@ -292,6 +292,50 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/reviews/{reviewId}/moderate': {
+      post: {
+        tags: ['Products'],
+        summary: 'Hybrid review moderation saga (req 19): Mongo status + PG counter with compensation',
+        description:
+          'Step 1: applies the moderation decision in Mongo (Review.status + moderationHistory).' +
+          ' Step 2: increments/decrements the denormalized products.review_count column in PG.' +
+          ' On step 2 failure the gateway compensates by reverting the moderation in Mongo so the two ' +
+          'stores stay consistent. Outcome of compensation is exposed via the X-Rollback-Status response header.',
+        parameters: [{ name: 'reviewId', in: 'path', required: true, schema: { type: 'string' }, example: '6555aa11bb22cc33dd44ee55' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['decision', 'moderatorId', 'productId'],
+                properties: {
+                  decision: { type: 'string', enum: ['approve', 'reject'] },
+                  moderatorId: { type: 'string' },
+                  reason: { type: 'string' },
+                  productId: { type: 'integer', description: 'numeric product id whose PG counter is updated' }
+                }
+              },
+              example: { decision: 'approve', moderatorId: 'examiner-bot', reason: 'looks good', productId: 1 }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Both stores updated successfully (X-Rollback-Status: not_attempted)',
+            content: { 'application/json': { example: { review: { status: 'APPROVED' }, productId: 1, delta: 1 } } }
+          },
+          400: {
+            description: 'Invalid decision or missing productId',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          502: {
+            description: 'PG counter update failed; mongo side was reverted (X-Rollback-Status: success/failed)',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          }
+        }
+      }
+    },
     '/api/users/{userId}/orders': {
       get: {
         tags: ['Orders'],

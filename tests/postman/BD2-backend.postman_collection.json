@@ -1697,6 +1697,7 @@
                   "  '/api/cart/{userId}/sync',",
                   "  '/api/checkout',",
                   "  '/api/orders/{orderId}/cancel',",
+                  "  '/api/reviews/{reviewId}/moderate',",
                   "  '/api/users/{userId}/orders'",
                   "];",
                   "expected.forEach(p => {",
@@ -2422,6 +2423,152 @@
                   "const rows = pm.response.json();",
                   "const hit = rows.find(r => r.reason === 'order_cancel_restore' && r.order_id === oid);",
                   "pm.test('compensating movement recorded', () => pm.expect(hit).to.exist);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "19. hybrid architecture (product saga + review moderation hybrid)",
+      "item": [
+        {
+          "name": "hybrid product saga — PG row + Mongo doc created together (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Hybrid Saga Test\",\n  \"sku\": \"REQ19_HYBRID_{{$timestamp}}\",\n  \"price\": 199,\n  \"category_id\": 1,\n  \"long_description\": \"saga product with both stores\",\n  \"specs\": { \"material\": \"silver\" },\n  \"gallery\": [\"https://cdn.example.com/x.jpg\"]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Reguła 19: tworzenie produktu = rekord w PG + dokument szczegółów w Mongo, w ramach sagi z kompensacją."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('id returned', () => pm.expect(b.id).to.be.a('number'));",
+                  "pm.test('message mentions both databases', () => pm.expect(b.message).to.match(/both databases/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid product saga — compensation: mongo fails → PG row rolled back",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Compensate Me\",\n  \"sku\": \"REQ19_COMPENSATE_{{$timestamp}}\",\n  \"price\": 99,\n  \"category_id\": 1,\n  \"long_description\": \"\",\n  \"variants\": [{ \"id\": \"v1\", \"color\": \"X\", \"stock\": 0 }],\n  \"specs\": {},\n  \"gallery\": []\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Test kompensacji: jeśli mongo odrzuca dokument, gateway robi DELETE w PG. Header X-Rollback-Status pokazuje wynik kompensacji."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201 or 4xx', () => pm.expect([201, 400, 409, 500]).to.include(pm.response.code));",
+                  "if (pm.response.code >= 400) {",
+                  "  pm.test('X-Rollback-Status header present', () => pm.expect(pm.response.headers.get('X-Rollback-Status')).to.be.a('string'));",
+                  "  pm.test('unified envelope', () => pm.expect(pm.response.json()).to.include.all.keys('error', 'code', 'details'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation setup — create a PENDING review (POST /reviews)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"req19-{{$timestamp}}\",\n  \"rating\": 5,\n  \"title\": \"Hybrid moderation test\",\n  \"body\": \"this review will be approved\",\n  \"status\": \"PENDING\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Tworzy PENDING review której użyje hybrydowa saga moderacji."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('req19_review_id', pm.response.json()._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation — approve updates Mongo status + PG review_count (POST /api/reviews/:id/moderate)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"examiner-bot\",\n  \"reason\": \"req19 hybrid demo\",\n  \"productId\": 1\n}" },
+            "url": { "raw": "{{gateway}}/api/reviews/{{req19_review_id}}/moderate", "host": ["{{gateway}}"], "path": ["api", "reviews", "{{req19_review_id}}", "moderate"] },
+            "description": "Reguła 19: hybryda recenzji. Step1 mongo: status → APPROVED. Step2 PG: products.review_count += 1. Header X-Rollback-Status: not_attempted (oba kroki OK)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('mongo step returned approved review', () => pm.expect(b.review.status).to.eql('APPROVED'));",
+                  "pm.test('delta +1', () => pm.expect(b.delta).to.eql(1));",
+                  "pm.test('rollback header not_attempted', () => pm.expect(pm.response.headers.get('X-Rollback-Status')).to.eql('not_attempted'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation — invalid productId triggers 400 BEFORE mongo write",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"examiner-bot\",\n  \"productId\": \"not-a-number\"\n}" },
+            "url": { "raw": "{{gateway}}/api/reviews/anything/moderate", "host": ["{{gateway}}"], "path": ["api", "reviews", "anything", "moderate"] },
+            "description": "Walidacja wejścia w gateway — productId musi być liczbą zanim cokolwiek pójdzie do baz."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('productId_required', () => pm.expect(pm.response.json().error).to.eql('productId_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation — compensation kicks in when PG step fails (unknown product)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"examiner-bot\",\n  \"reason\": \"hybrid compensation demo\",\n  \"productId\": 999999\n}" },
+            "url": { "raw": "{{gateway}}/api/reviews/{{req19_review_id}}/moderate", "host": ["{{gateway}}"], "path": ["api", "reviews", "{{req19_review_id}}", "moderate"] },
+            "description": "Reguła 19 (kompensacja): PG nie znajdzie productId=999999 → 404 → gateway cofa moderację w mongo (revert do REJECTED) i zwraca 502 z X-Rollback-Status: success."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 502 hybrid_review_failed', () => pm.response.to.have.status(502));",
+                  "pm.test('error is hybrid_review_failed', () => pm.expect(pm.response.json().error).to.eql('hybrid_review_failed'));",
+                  "pm.test('rollback header is success or failed', () => pm.expect(['success','failed']).to.include(pm.response.headers.get('X-Rollback-Status')));"
                 ]
               }
             }

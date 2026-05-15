@@ -136,6 +136,38 @@ app.patch('/products/:id/price', async (req, res, next) => {
   }
 });
 
+// hybrid architecture: denormalized review counter living in PG.
+// invoked by the gateway saga after the mongo moderation transition succeeds.
+// delta is bounded between -1 and +1 per call so a misbehaving caller cannot
+// arbitrarily move the counter; review_count is clamped to >= 0.
+app.patch('/internal/products/:productId/review-count', async (req, res, next) => {
+  try {
+    const productId = Number(req.params.productId);
+    const delta = Number(req.body?.delta);
+    if (!Number.isFinite(productId)) {
+      return sendError(res, 400, 'invalid_id', 'productId must be numeric');
+    }
+    if (![1, -1].includes(delta)) {
+      return sendError(res, 400, 'invalid_delta', 'delta must be +1 or -1');
+    }
+
+    // atomic update via knex raw fragment - never goes below zero
+    const updated = await knex('products')
+      .where({ id: productId })
+      .update({
+        review_count: knex.raw('GREATEST(review_count + ?, 0)', [delta])
+      })
+      .returning(['id', 'review_count']);
+
+    if (!updated.length) {
+      return sendError(res, 404, 'not_found', `product ${productId} not found`);
+    }
+    res.json(updated[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // internal endpoint for gateway to create product
 app.post('/internal/products', async (req, res, next) => {
   try {

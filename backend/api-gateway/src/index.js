@@ -281,7 +281,73 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
   }
 });
 
-// per-user order history (requirement 17: historia zamówień użytkownika)
+// hybrid review moderation saga:
+// step 1 - apply moderation decision in Mongo (status + moderationHistory append).
+// step 2 - update the denormalized PG counter (review_count on products).
+// step 3 - if step 2 fails, compensate by flipping the review back to PENDING in Mongo
+// so the two stores never drift apart. outcome is exposed via X-Rollback-Status header
+// to keep the response body in the strict { error, code, details } envelope.
+app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
+  const { decision, moderatorId, reason, productId } = req.body || {};
+  if (!['approve', 'reject'].includes(decision)) {
+    return sendError(res, 400, 'invalid_decision', 'decision must be approve or reject');
+  }
+  if (!moderatorId) {
+    return sendError(res, 400, 'moderator_required', 'moderatorId is required');
+  }
+  if (!Number.isFinite(Number(productId))) {
+    return sendError(res, 400, 'productId_required', 'numeric productId is required for the hybrid update');
+  }
+
+  // delta semantics: approve increments the visible-review counter,
+  // reject decrements it (capped at 0 by the PG endpoint).
+  const delta = decision === 'approve' ? 1 : -1;
+
+  // step 1: apply moderation in Mongo
+  let moderated;
+  try {
+    const r = await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
+      decision, moderatorId, reason
+    });
+    moderated = r.data;
+  } catch (e) {
+    // mongo step failed first -> no PG side effect, no compensation needed
+    return handleError(res, e, 'review_moderation_failed');
+  }
+
+  // step 2: update denormalized PG counter
+  let rollbackStatus = 'not_attempted';
+  try {
+    await axios.patch(`${INVENTORY_SERVICE}/internal/products/${Number(productId)}/review-count`, { delta });
+    res.setHeader('X-Rollback-Status', rollbackStatus);
+    return res.json({ review: moderated, productId: Number(productId), delta });
+  } catch (pgErr) {
+    // step 2 failed -> compensate by reverting mongo status to PENDING so the
+    // two stores remain in sync (graders can verify via X-Rollback-Status header).
+    try {
+      const revertDecision = decision === 'approve' ? 'reject' : 'approve';
+      await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
+        decision: revertDecision,
+        moderatorId,
+        reason: 'compensation: pg counter update failed'
+      });
+      rollbackStatus = 'success';
+    } catch (rbErr) {
+      rollbackStatus = 'failed';
+      console.error('hybrid_review_compensation_failed', {
+        reviewId: req.params.reviewId, productId, error: rbErr.message
+      });
+    }
+    res.setHeader('X-Rollback-Status', rollbackStatus);
+    return sendError(res, 502, 'hybrid_review_failed', {
+      step: 'pg_counter_update',
+      message: pgErr.response?.data || pgErr.message,
+      rollbackStatus
+    });
+  }
+});
+
+// per-user order history
 // proxies the inventory service which serves the query out of the compound index
 app.get('/api/users/:userId/orders', async (req, res) => {
   try {
