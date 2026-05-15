@@ -1835,6 +1835,281 @@
           ]
         }
       ]
+    },
+    {
+      "name": "13. automated tests (critical paths)",
+      "item": [
+        {
+          "name": "health: api-gateway is reachable (mirrors e2e step 0)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/health", "host": ["{{gateway}}"], "path": ["health"] },
+            "description": "Smoke: rownolegly do supertestu - sprawdza ze gateway zyje."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service is api-gateway', () => pm.expect(pm.response.json().service).to.eql('api-gateway'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 1: snapshot initial stock (mirrors e2e step 1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Krytyczna sciezka: lista produktow + zapamietanie stocku do dalszych testow."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const list = pm.response.json();",
+                  "pm.test('is array', () => pm.expect(list).to.be.an('array').that.is.not.empty);",
+                  "const product = list.find(p => p.id === 1);",
+                  "pm.test('product 1 exists', () => pm.expect(product).to.be.an('object'));",
+                  "pm.collectionVariables.set('e2e_initial_stock', product.stock);",
+                  "pm.collectionVariables.set('e2e_test_user', 'e2e-postman');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 2: oversell blocked with 409 (mirrors e2e step 2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{e2e_test_user}}\",\n  \"items\": [{ \"productId\": 1, \"quantity\": 99999, \"price\": 120 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Zamowienie wiekszej ilosci niz dostepny stock - musi byc 409 z envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 3: valid checkout 201 (mirrors e2e step 3)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{e2e_test_user}}\",\n  \"items\": [{ \"productId\": 1, \"quantity\": 1, \"price\": 120 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Pozytywny checkout - zapisuje orderId do dalszych krokow."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('success true', () => pm.expect(body.success).to.be.true);",
+                  "pm.test('orderId returned', () => pm.expect(body.orderId).to.be.a('number'));",
+                  "pm.collectionVariables.set('e2e_order_id', body.orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 4: stock decreased by exact qty (mirrors e2e step 4)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Stock po checkout musi byc dokladnie initial - 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const list = pm.response.json();",
+                  "const product = list.find(p => p.id === 1);",
+                  "const expected = Number(pm.collectionVariables.get('e2e_initial_stock')) - 1;",
+                  "pm.test(`stock decreased to ${expected}`, () => pm.expect(product.stock).to.eql(expected));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 5: cancel restores stock (mirrors e2e step 5)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/orders/{{e2e_order_id}}/cancel", "host": ["{{gateway}}"], "path": ["api", "orders", "{{e2e_order_id}}", "cancel"] },
+            "description": "Cancel -> stock wraca do initial."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 5b: stock restored to initial value",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const list = pm.response.json();",
+                  "const product = list.find(p => p.id === 1);",
+                  "const expected = Number(pm.collectionVariables.get('e2e_initial_stock'));",
+                  "pm.test(`stock restored to ${expected}`, () => pm.expect(product.stock).to.eql(expected));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 6: aggregated single product PG+Mongo (mirrors e2e step 6)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products/1", "host": ["{{gateway}}"], "path": ["api", "products", "1"] },
+            "description": "Agregacja PG + Mongo musi zwrocic id, sku, price, variants[], gallery[]."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has merged fields', () => {",
+                  "  pm.expect(body.id).to.eql(1);",
+                  "  pm.expect(body.sku).to.be.a('string');",
+                  "  pm.expect(Number(body.price)).to.be.a('number').and.not.NaN;",
+                  "  pm.expect(body.variants).to.be.an('array');",
+                  "  pm.expect(body.gallery).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 7: validation rejects bad payload (mirrors e2e step 9)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"\",\n  \"sku\": \"BAD\",\n  \"price\": -50\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 8: cart sync round trip (mirrors e2e step 10)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [{ \"productId\": 1, \"quantity\": 2, \"price\": 120 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/e2e-cart-user/sync", "host": ["{{gateway}}"], "path": ["api", "cart", "e2e-cart-user", "sync"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 8b: cart can be read back",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/cart/e2e-cart-user", "host": ["{{gateway}}"], "path": ["api", "cart", "e2e-cart-user"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('lines is array with content', () => { pm.expect(body.lines).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "critical path 9: unknown user cart returns safe default (mirrors e2e step 11)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/cart/this-user-does-not-exist-xyz", "host": ["{{gateway}}"], "path": ["api", "cart", "this-user-does-not-exist-xyz"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns empty default cart', () => pm.expect(pm.response.json()).to.eql({ lines: [], totalPrice: 0 }));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

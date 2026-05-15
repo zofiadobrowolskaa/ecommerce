@@ -85,6 +85,11 @@ jobs:
         EOF
         docker exec -i spa-postgres-1 psql -U user -d ecommerce_db < prep.sql
 
-    # step 6: execute the supertest suite
+    # step 6: execute the supertest suite (sequential, shared state between steps)
     - name: Run Supertest E2E Suite
       run: docker exec -e API_URL=http://127.0.0.1:3000 spa-api-gateway-1 npm run test:e2e
+
+    # step 7: dump compose logs if anything above failed (visible in the CI run)
+    - name: Dump logs on failure
+      if: failure()
+      run: docker compose -p spa logs --tail=200

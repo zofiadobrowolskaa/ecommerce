@@ -176,7 +176,18 @@ app.get('/api/cart/:userId', async (req, res) => {
   try {
     // fetch cart from inventory service (source of truth)
     const r = await axios.get(`${INVENTORY_SERVICE}/cart/${req.params.userId}`);
-    res.json(r.data);
+
+    // sequelize returns the association name verbatim (CartLines) - normalize
+    // to a stable client contract { id, userId, status, totalPrice, lines }
+    // so the api shape never depends on the orm
+    const raw = r.data || {};
+    res.json({
+      id: raw.id,
+      userId: raw.userId,
+      status: raw.status,
+      totalPrice: Number(raw.totalPrice) || 0,
+      lines: raw.CartLines || raw.cartLines || raw.lines || []
+    });
   } catch (e) {
     // if cart does not exist yet, return empty state instead of error
     if (e.response?.status === 404) {

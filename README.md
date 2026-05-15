@@ -182,6 +182,13 @@ The gateway exposes a fully interactive **OpenAPI 3.0** contract documenting end
 - **Swagger UI (interactive):** http://localhost:3000/api-docs
 - **Raw spec (publishable JSON):** http://localhost:3000/api-docs.json
 
+Download the spec and feed it to any OpenAPI tooling:
+
+```bash
+curl http://localhost:3000/api-docs.json > openapi.json
+# can be imported to Postman, fed to openapi-generator-cli, rendered by ReDoc, etc.
+```
+
 ## 🛠️ Database Technologies & ORMs (Polyglot Implementation)
 
 The backend uses **seven** distinct database interaction paradigms in clearly separated bounded contexts:
@@ -229,21 +236,31 @@ Helpers in [`tests/`](tests/):
 - `containerization.ps1` – sanity checks for multi-stage Dockerfiles, healthchecks, depends_on, .env.example, auto-seeder.
 - `microservices.ps1` – sanity checks for separate Node containers, DB split, HTTP discovery, migrations from compose.
 
-### E2E suite (CI/CD)
+### E2E / integration suite (supertest + isolated stack)
 
-`tests/api-gateway/src/e2e.test.js` uses `supertest`. GitHub Actions spins up an isolated stack and runs:
-- initial stock fetching
-- oversell protection (`409 Conflict`)
-- successful checkout finalization
-- stock reduction verification
-- stock restoration after cancellation
-- hybrid product creation saga
-- Zod validation rejection
+`backend/api-gateway/src/e2e.test.js` uses `supertest` and is wired to `jest` with `--runInBand` for deterministic ordering. GitHub Actions (`.github/workflows/e2e-tests.yml`) spins up an isolated docker compose stack (`postgres`, `mongodb`, all microservices) on every push and pull request, runs migrations + seeds, then executes the suite.
+
+| # | Critical path | What it asserts |
+|---|---|---|
+| 0 | `/health` smoke | Gateway is reachable |
+| 1 | Initial product list | Aggregated PG + Mongo list works, snapshots stock |
+| 2 | Oversell protection | `quantity > stock` → 409 with unified envelope |
+| 3 | Successful checkout | 201 + `success: true` + `orderId` returned |
+| 4 | Stock reduction | Stock decreased by exactly the purchased quantity |
+| 5 | Cancel + stock restore | `POST /orders/:id/cancel` restores stock to original |
+| 6 | Single product aggregation | `GET /products/:id` merges PG (base) with Mongo (variants, gallery) |
+| 7 | Hybrid saga happy path | `POST /products` writes to both DBs and returns 201 |
+| 8 | Hybrid saga compensation | Mongo validator failure → PG row rolled back → `X-Rollback-Status: success` |
+| 9 | Zod validation rejection | Empty `name` + negative `price` → 400 `validation_error` |
+| 10 | Cart sync round trip | `POST /cart/:userId/sync` persists, `GET /cart/:userId` returns content |
+| 11 | Empty cart default | Unknown user → 200 with `{ lines: [], totalPrice: 0 }` |
 
 Run locally:
 ```bash
 docker exec -it spa-api-gateway-1 npm run test:e2e
 ```
+
+Run the same critical paths against a local stack from Postman: open the `13. automated tests (critical paths)` folder in the bundled collection — every step there mirrors a supertest case and can be executed against an already-running stack.
 
 
 
