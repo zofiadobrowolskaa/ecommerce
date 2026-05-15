@@ -34,7 +34,30 @@ app.post('/telemetry/event', async (req, res) => {
   }
 });
 
-// cart draft operations
+// full-text search across telemetry events using the text index on details + action
+app.get('/telemetry/search', async (req, res) => {
+  try {
+    const db = getDb();
+    const { q } = req.query;
+    if (!q) {
+      return res.status(400).json({ error: 'query_required', details: 'pass ?q=keyword' });
+    }
+
+    // $text query uses the text index created on event_log
+    // textScore lets us sort by relevance
+    const results = await db.collection('event_log')
+      .find({ $text: { $search: q } }, { projection: { score: { $meta: 'textScore' } } })
+      .sort({ score: { $meta: 'textScore' } })
+      .limit(20)
+      .toArray();
+
+    res.json({ count: results.length, results });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// cart draft operations (native driver, 3 operators in one call)
 app.post('/cart-draft/:sessionId/add', async (req, res) => {
   try {
     const db = getDb();
@@ -51,6 +74,36 @@ app.post('/cart-draft/:sessionId/add', async (req, res) => {
       { upsert: true }
     );
     res.status(200).json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// remove a specific item from a cart draft using $pull (4th distinct operator)
+app.post('/cart-draft/:sessionId/remove', async (req, res) => {
+  try {
+    const db = getDb();
+    const { sessionId } = req.params;
+    const { productId } = req.body;
+    if (!productId) {
+      return res.status(400).json({ error: 'productId_required' });
+    }
+
+    // $pull removes all matching items from the items array
+    // $inc decrements totalItems atomically in the same write
+    const result = await db.collection('cart_draft').updateOne(
+      { sessionId },
+      {
+        $pull: { items: { productId } },
+        $set: { lastModified: new Date() },
+        $inc: { totalItems: -1 }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'cart_draft_not_found' });
+    }
+    res.json({ success: true, modified: result.modifiedCount });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

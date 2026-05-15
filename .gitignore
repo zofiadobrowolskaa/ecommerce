@@ -15,3 +15,5 @@ npm-debug.log*
 .idea/
 
 old_README.md
+
+tests/setup.ps1
