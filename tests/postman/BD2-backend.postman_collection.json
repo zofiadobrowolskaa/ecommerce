@@ -1412,6 +1412,248 @@
           ]
         }
       ]
+    },
+    {
+      "name": "10. hybrid architecture",
+      "item": [
+        {
+          "name": "hybrid create success - product exists in BOTH databases (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Hybrid Saga Product\",\n  \"sku\": \"HYBRID_OK_001\",\n  \"price\": 75.50,\n  \"category_id\": 1,\n  \"long_description\": \"saga full success scenario\",\n  \"variants\": [\n    { \"id\": \"hv1\", \"color\": \"Gold\", \"stock\": 10, \"size\": [\"S\"] }\n  ]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Saga: PG insert -> Mongo insert -> 201. Zapisuje id w hybridProductId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returned id is number', () => pm.expect(body.id).to.be.a('number'));",
+                  "pm.collectionVariables.set('hybridProductId', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid product visible in PG (GET /products/:id via inventory)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/{{hybridProductId}}", "host": ["{{inventory}}"], "path": ["products", "{{hybridProductId}}"] },
+            "description": "Po Saga step 1 produkt ma istniec w PG. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('sku matches', () => pm.expect(pm.response.json().sku).to.eql('HYBRID_OK_001'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid product visible in Mongo (GET /product-details/:id via catalog)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/{{hybridProductId}}", "host": ["{{catalog}}"], "path": ["product-details", "{{hybridProductId}}"] },
+            "description": "Po Saga step 2 detal ma istniec w Mongo. Oczekiwane: 200 + variants."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has variants from saga step 2', () => pm.expect(pm.response.json().variants).to.be.an('array').with.lengthOf.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "compensation triggered - duplicate sku rolls back PG insert (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Rollback Probe\",\n  \"sku\": \"HYBRID_OK_001\",\n  \"price\": 1,\n  \"category_id\": 1,\n  \"long_description\": \"forces 23505 unique violation in pg\",\n  \"variants\": []\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Powtorny insert na to samo sku -> PG zwraca 409 unique violation. Saga nie wykonuje step 2, kompensacja nie jest potrzebna (PG sam odrzucil). Oczekiwane: 409 z { error, code, details }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('unified envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('error indicates conflict', () => pm.expect(body.error).to.match(/conflict/));",
+                  "pm.test('code matches HTTP status', () => pm.expect(body.code).to.eql(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "compensation triggered - mongo step fails (duplicate colors) rolls back PG",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Mongo Validator Probe\",\n  \"sku\": \"HYBRID_ROLLBACK_002\",\n  \"price\": 5,\n  \"category_id\": 1,\n  \"long_description\": \"step 1 ok in PG, step 2 fails because variant colors duplicate\",\n  \"variants\": [\n    { \"id\": \"vA\", \"color\": \"Red\", \"stock\": 1 },\n    { \"id\": \"vB\", \"color\": \"Red\", \"stock\": 1 }\n  ]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Step 1 (PG insert) sie powiedzie, step 2 (Mongo) padnie na custom validatorze 'variants must have unique colors'. Gateway wykonuje kompensacje (DELETE w PG). Oczekiwane: 4xx z { error, code, details } i X-Rollback-Status: success."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx (mongo validation failed)', () => pm.expect(pm.response.code).to.be.within(400, 499));",
+                  "const body = pm.response.json();",
+                  "pm.test('response has unified envelope { error, code, details }', () => {",
+                  "  pm.expect(body).to.include.all.keys('error', 'code', 'details');",
+                  "});",
+                  "pm.test('rollback status header is success', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Rollback-Status')).to.eql('success');",
+                  "});",
+                  "pm.test('details mentions rollbackStatus', () => {",
+                  "  pm.expect(JSON.stringify(body.details)).to.match(/rollbackStatus/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "verify rollback - sku does NOT exist in PG after compensation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/HYBRID_ROLLBACK_002", "host": ["{{inventory}}"], "path": ["products", "HYBRID_ROLLBACK_002"] },
+            "description": "Po kompensacji nowy SKU nie powinien byc w PG. Oczekiwane: 404 (DELETE saga wykonal sie poprawnie)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404 (PG row was rolled back)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: zod validation 400 (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"\",\n  \"price\": -5\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Zod odrzuca payload. Oczekiwane: 400 z { error: 'validation_error', code: 400, details: [...] }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('exact envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code is 400', () => pm.expect(body.code).to.eql(400));",
+                  "pm.test('error is validation_error', () => pm.expect(body.error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: gateway not_found 404 (GET /api/products/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products/999999", "host": ["{{gateway}}"], "path": ["api", "products", "999999"] },
+            "description": "Nieistniejacy produkt. Oczekiwane: 404 z unified envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('error is not_found', () => pm.expect(body.error).to.eql('not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: inventory 404 propagates same shape (GET /products/:id direct)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/999999", "host": ["{{inventory}}"], "path": ["products", "999999"] },
+            "description": "Inventory tez musi zwracac unified envelope. Oczekiwane: 404 z { error, code, details }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code is 404 number', () => pm.expect(body.code).to.eql(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unified envelope: catalog 400 query_required (GET /telemetry/search)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
+            "description": "Catalog tez. Brak ?q -> 400 z unified envelope."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('error is query_required', () => pm.expect(body.error).to.eql('query_required'));",
+                  "pm.test('code is 400', () => pm.expect(body.code).to.eql(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

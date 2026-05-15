@@ -9,6 +9,10 @@ const prisma = new PrismaClient();
 const app = express();
 app.use(express.json());
 
+// unified error response helper: every failure responds with { error, code, details }
+const sendError = (res, status, error, details) =>
+  res.status(status).json({ error, code: status, details: details ?? null });
+
 // simple healthcheck endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'inventory-order-service' });
@@ -27,10 +31,10 @@ app.get('/products', async (req, res, next) => {
 
     // reject non-numeric filters as 400 instead of crashing on a Postgres cast error
     if (category !== undefined && !Number.isFinite(categoryId)) {
-      return res.status(400).json({ error: 'invalid_filter', details: 'category must be numeric' });
+      return sendError(res, 400, 'invalid_filter', 'category must be numeric');
     }
     if (maxPrice !== undefined && !Number.isFinite(maxPriceNum)) {
-      return res.status(400).json({ error: 'invalid_filter', details: 'maxPrice must be numeric' });
+      return sendError(res, 400, 'invalid_filter', 'maxPrice must be numeric');
     }
 
     // dynamic where builder (no string concatenation, all values bound as parameters)
@@ -63,7 +67,7 @@ app.get('/products/:id', async (req, res, next) => {
     }
 
     if (!product) {
-      return res.status(404).json({ error: 'not_found' });
+      return sendError(res, 404, 'not_found', `product ${id} not found`);
     }
 
     res.json(product);
@@ -116,10 +120,10 @@ app.get('/cart/:userId', async (req, res) => {
       where: { userId: req.params.userId, status: 'OPEN' },
       include: [CartLine] // eager loading implementation
     });
-    if (!cart) return res.status(404).json({ error: 'cart not found' });
+    if (!cart) return sendError(res, 404, 'cart_not_found', `no open cart for user ${req.params.userId}`);
     res.json(cart);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, 'internal_server_error', err.message);
   }
 });
 
@@ -157,12 +161,9 @@ app.post('/cart/:userId/sync', async (req, res) => {
   } catch (e) {
     // map sequelize validation errors to 400 so the client gets actionable feedback
     if (e.name === 'SequelizeValidationError' || e.name === 'SequelizeUniqueConstraintError') {
-      return res.status(400).json({
-        error: 'validation_error',
-        details: e.errors.map(err => ({ field: err.path, message: err.message }))
-      });
+      return sendError(res, 400, 'validation_error', e.errors.map(err => ({ field: err.path, message: err.message })));
     }
-    res.status(500).json({ error: e.message });
+    sendError(res, 500, 'internal_server_error', e.message);
   }
 });
 
@@ -217,8 +218,10 @@ app.post('/checkout', async (req, res) => {
 
     res.status(201).json({ orderId: order.id });
   } catch (err) {
-    if (err.message.includes('409')) return res.status(409).json({ error: 'conflict_oversell' });
-    res.status(500).json({ error: err.message });
+    if (err.message.includes('409')) {
+      return sendError(res, 409, 'conflict_oversell', 'one or more items exceed available stock');
+    }
+    sendError(res, 500, 'internal_server_error', err.message);
   }
 });
 
@@ -229,16 +232,19 @@ app.post('/orders/:id/cancel', async (req, res) => {
     await prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id: orderId }, include: { lines: true } });
       if (!order) throw new Error('not_found');
-      
+
       await tx.order.update({ where: { id: orderId }, data: { status: 'CANCELLED' }});
-      
+
       // return stock to inventory
       for (const line of order.lines) {
         await tx.$executeRaw`UPDATE products SET stock = stock + ${line.quantity} WHERE sku = ${line.sku}`;
       }
     });
     res.sendStatus(200);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    if (e.message === 'not_found') return sendError(res, 404, 'not_found', `order ${req.params.id} not found`);
+    sendError(res, 500, 'internal_server_error', e.message);
+  }
 });
 
 // list all orders using prisma typed model api (R in CRUD)
@@ -263,7 +269,7 @@ app.get('/orders/:id', async (req, res, next) => {
       where: { id: orderId },
       include: { lines: true }
     });
-    if (!order) return res.status(404).json({ error: 'not_found' });
+    if (!order) return sendError(res, 404, 'not_found', `order ${req.params.id} not found`);
     res.json(order);
   } catch (err) {
     next(err);
@@ -283,7 +289,7 @@ app.delete('/orders/:id', async (req, res, next) => {
     res.sendStatus(204);
   } catch (err) {
     // prisma throws P2025 when record to delete is not found
-    if (err.code === 'P2025') return res.status(404).json({ error: 'not_found' });
+    if (err.code === 'P2025') return sendError(res, 404, 'not_found', `order ${req.params.id} not found`);
     next(err);
   }
 });
@@ -307,7 +313,7 @@ app.get('/analytics/orders-report', async (req, res) => {
 
     res.json(formattedReport);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, 500, 'internal_server_error', err.message);
   }
 });
 

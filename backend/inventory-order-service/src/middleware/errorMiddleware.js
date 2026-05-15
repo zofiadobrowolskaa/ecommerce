@@ -1,20 +1,26 @@
-// map pg error codes to http
+// map pg error codes to http and respond in the unified { error, code, details } envelope
 const pgErrorMap = (err, req, res, next) => {
   const codes = {
-    '23505': { status: 409, message: 'Conflict: Unique constraint violation' },
-    '23503': { status: 400, message: 'Bad Request: Foreign key violation' }
+    '23505': { status: 409, error: 'conflict_unique_violation' },
+    '23503': { status: 400, error: 'foreign_key_violation' }
   };
 
   const mapped = codes[err.code];
   if (mapped) {
-    // send formatted error
+    // unified envelope: { error, code, details }
+    // code is the HTTP status; details carries the pg sqlstate for diagnostics
     return res.status(mapped.status).json({
-      error: mapped.message,
-      code: err.code,
-      details: err.detail
+      error: mapped.error,
+      code: mapped.status,
+      details: { sqlstate: err.code, message: err.detail || err.message }
     });
   }
-  next(err);
+  // generic fallback so any unhandled error still respects the contract
+  res.status(500).json({
+    error: 'internal_server_error',
+    code: 500,
+    details: err.message || 'unexpected error'
+  });
 };
 
 module.exports = pgErrorMap;

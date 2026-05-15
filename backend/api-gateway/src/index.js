@@ -30,13 +30,16 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 const INVENTORY_SERVICE = process.env.INVENTORY_SERVICE_URL || 'http://pg-service:3001';
 const CATALOG_SERVICE = process.env.CATALOG_SERVICE_URL || 'http://mongo-service:3002';
 
-// helper for standardized errors
+// unified error envelope used by every gateway response on failure
+// shape contract: { error: string, code: number, details: any }
+const sendError = (res, status, error, details) => {
+  res.status(status).json({ error, code: status, details: details ?? null });
+};
+
+// adapter for downstream service errors (axios) keeping the same contract
 const handleError = (res, err, defaultError = 'gateway_error') => {
-  res.status(err.response?.status || 500).json({
-    error: defaultError,
-    code: err.response?.status || 500,
-    details: err.response?.data || 'an unexpected error occurred'
-  });
+  const status = err.response?.status || 500;
+  sendError(res, status, defaultError, err.response?.data || err.message || 'an unexpected error occurred');
 };
 
 // PRODUCTS HYBRID SAGA 
@@ -92,25 +95,32 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
     // track rollback attempt status for observability/debugging
     let rollbackStatus = 'not_attempted';
 
-    // compensation: if step 2 fails, remove product from postgres
+    // compensation: if step 2 (mongo) failed, undo step 1 (pg) by deleting the row
     if (createdProductId) {
       try {
         await axios.delete(`${INVENTORY_SERVICE}/internal/products/${createdProductId}`);
         rollbackStatus = 'success';
       } catch (rbError) {
-        // rollback failure should be visible (system is now inconsistent)
+        // rollback failure leaves the system inconsistent - emit a loud log entry
         rollbackStatus = 'failed';
+        console.error('saga_compensation_failed', { productId: createdProductId, error: rbError.message });
       }
     }
 
-    // return error with rollback status, preserving original status code
+    // expose rollback outcome via a response header so the body stays in the
+    // strict { error, code, details }
+    res.setHeader('X-Rollback-Status', rollbackStatus);
+
     const statusCode = error.response?.status || 500;
-    res.status(statusCode).json({
-      error: statusCode === 409 ? 'conflict' : 'hybrid_transaction_failed',
-      code: statusCode,
-      details: error.response?.data || error.message,
-      rollback_status: rollbackStatus
-    });
+    sendError(
+      res,
+      statusCode,
+      statusCode === 409 ? 'conflict' : 'hybrid_transaction_failed',
+      {
+        message: error.response?.data || error.message,
+        rollbackStatus
+      }
+    );
   }
 });
 
@@ -243,7 +253,7 @@ app.get('/api/products/:id', async (req, res) => {
     // handle inventory errors (source of truth)
     if (!invResponse.ok) {
       if (invResponse.status === 404) {
-        return res.status(404).json({ error: 'not_found', details: 'product not found' });
+        return sendError(res, 404, 'not_found', 'product not found');
       }
       throw new Error(`inventory service error: status ${invResponse.status}`);
     }
@@ -276,8 +286,8 @@ app.get('/api/products/:id', async (req, res) => {
 
     res.status(200).json(aggregatedProduct);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'internal_server_error' });
+    console.error('product_aggregation_failed', error.message);
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -286,12 +296,8 @@ app.use((err, req, res, next) => {
   // log internal error (should be replaced with structured logging in production)
   console.error('system_error:', err.message);
 
-  // do not leak internals to client
-  res.status(500).json({
-    error: 'internal_server_error',
-    code: 500,
-    details: 'unexpected critical error'
-  });
+  // do not leak internals to client; respond in the unified { error, code, details } shape
+  sendError(res, 500, 'internal_server_error', 'unexpected critical error');
 });
 
 const PORT = 3000;

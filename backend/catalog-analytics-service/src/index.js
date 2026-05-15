@@ -7,6 +7,10 @@ const Review = require('./models/Review');
 const app = express();
 app.use(express.json());
 
+// unified error response helper: every failure responds with { error, code, details }
+const sendError = (res, status, error, details) =>
+  res.status(status).json({ error, code: status, details: details ?? null });
+
 // simple healthcheck endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'catalog-analytics-service' });
@@ -30,7 +34,7 @@ app.post('/telemetry/event', async (req, res) => {
     );
     res.status(201).json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -40,7 +44,7 @@ app.get('/telemetry/search', async (req, res) => {
     const db = getDb();
     const { q } = req.query;
     if (!q) {
-      return res.status(400).json({ error: 'query_required', details: 'pass ?q=keyword' });
+      return sendError(res, 400, 'query_required', 'pass ?q=keyword');
     }
 
     // $text query uses the text index created on event_log
@@ -53,7 +57,7 @@ app.get('/telemetry/search', async (req, res) => {
 
     res.json({ count: results.length, results });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -75,7 +79,7 @@ app.post('/cart-draft/:sessionId/add', async (req, res) => {
     );
     res.status(200).json({ success: true, result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -86,7 +90,7 @@ app.post('/cart-draft/:sessionId/remove', async (req, res) => {
     const { sessionId } = req.params;
     const { productId } = req.body;
     if (!productId) {
-      return res.status(400).json({ error: 'productId_required' });
+      return sendError(res, 400, 'productId_required', 'body must include productId');
     }
 
     // $pull removes all matching items from the items array
@@ -101,11 +105,11 @@ app.post('/cart-draft/:sessionId/remove', async (req, res) => {
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({ error: 'cart_draft_not_found' });
+      return sendError(res, 404, 'cart_draft_not_found', `no cart draft for session ${sessionId}`);
     }
     res.json({ success: true, modified: result.modifiedCount });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -118,7 +122,7 @@ app.post('/reviews', async (req, res) => {
     res.status(201).json(review);
   } catch (error) {
     // mongoose validation errors surface here with structured details
-    res.status(400).json({ error: error.message });
+    sendError(res, 400, 'validation_error', error.message);
   }
 });
 
@@ -131,7 +135,7 @@ app.get('/reviews/:productId', async (req, res) => {
     const reviews = await Review.findByProduct(productId).populate('productDetail');
     res.json(reviews);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -140,14 +144,14 @@ app.post('/reviews/:id/moderate', async (req, res) => {
   try {
     const { decision, moderatorId, reason } = req.body;
     if (!['approve', 'reject'].includes(decision)) {
-      return res.status(400).json({ error: 'decision must be approve or reject' });
+      return sendError(res, 400, 'invalid_decision', 'decision must be approve or reject');
     }
     if (!moderatorId) {
-      return res.status(400).json({ error: 'moderatorId is required' });
+      return sendError(res, 400, 'moderator_required', 'moderatorId is required');
     }
 
     const review = await Review.findById(req.params.id);
-    if (!review) return res.status(404).json({ error: 'review not found' });
+    if (!review) return sendError(res, 404, 'not_found', `review ${req.params.id} not found`);
 
     // call instance method (also runs the pre-save hook and validators)
     if (decision === 'approve') await review.approve(moderatorId, reason);
@@ -155,7 +159,7 @@ app.post('/reviews/:id/moderate', async (req, res) => {
 
     res.json(review);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    sendError(res, 400, 'validation_error', error.message);
   }
 });
 
@@ -206,7 +210,7 @@ app.get('/analytics/average-ratings', async (req, res) => {
 
     res.json(report);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -221,7 +225,7 @@ app.get('/analytics/average-ratings/explain', async (req, res) => {
 
     res.json(explain);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
 });
 
@@ -248,7 +252,7 @@ app.post('/internal/product-details', async (req, res) => {
     await detail.save();
     res.status(201).json(detail);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    sendError(res, 400, 'validation_error', error.message);
   }
 });
 
@@ -257,19 +261,25 @@ app.get('/product-details/:productId', async (req, res) => {
   try {
     const detail = await ProductDetail.findOne({ productId: Number(req.params.productId) });
     if (!detail) {
-      return res.status(404).json({ message: 'details not found' });
+      return sendError(res, 404, 'not_found', `product details for ${req.params.productId} not found`);
     }
-    
+
     // fetch approved reviews to attach to details
     const reviews = await Review.find({ productId: Number(req.params.productId), status: 'APPROVED' });
-    
+
     res.status(200).json({
       ...detail.toObject(),
       reviews: reviews
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendError(res, 500, 'internal_server_error', error.message);
   }
+});
+
+// global error handler (final fallback) - always responds in unified shape
+app.use((err, req, res, next) => {
+  console.error('catalog_system_error:', err.message);
+  sendError(res, 500, 'internal_server_error', 'unexpected critical error');
 });
 
 const PORT = process.env.PORT || 3002;
