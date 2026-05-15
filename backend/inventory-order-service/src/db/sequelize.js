@@ -55,6 +55,14 @@ const CartLine = sequelize.define('CartLine', {
       min: { args: [1], msg: 'productId must be positive' }
     }
   },
+  // optional saleable sku (variants.sku); null means "use default variant at checkout"
+  variantSku: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    validate: {
+      len: { args: [0, 255], msg: 'variantSku too long' }
+    }
+  },
   quantity: {
     type: DataTypes.INTEGER,
     allowNull: false,

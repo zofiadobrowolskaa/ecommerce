@@ -2322,6 +2322,150 @@
           ]
         }
       ]
+    },
+    {
+      "name": "15. model relacyjny — postgres",
+      "item": [
+        {
+          "name": "variants — GET /products/:id/variants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/products/1/variants",
+              "host": ["{{inventory}}"],
+              "path": ["products", "1", "variants"]
+            },
+            "description": "Wymaganie 15: osobna tabela variants z SKU / ceną / stanem. Zakładamy istniejący produkt id=1 po seederze."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('non-empty variants array', () => pm.expect(rows).to.be.an('array').that.is.not.empty);",
+                  "pm.test('relational columns present', () => pm.expect(rows[0]).to.include.keys('sku', 'price', 'stock'));",
+                  "pm.collectionVariables.set('rel_variant_sku', String(rows[0].sku));",
+                  "pm.collectionVariables.set('rel_variant_price', Number(rows[0].price));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout tx — deduct variants + inventory_movements",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"postman-rel-model\",\n  \"items\": [\n    {\n      \"productId\": 1,\n      \"sku\": \"{{rel_variant_sku}}\",\n      \"quantity\": 1,\n      \"price\": {{rel_variant_price}}\n    }\n  ]\n}"
+            },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Prisma $transaction: SELECT variants FOR UPDATE, UPDATE stock, INSERT inventory_movements + OrderLines ze snapshotem SKU i ceny."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('checkout 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('orderId returned', () => pm.expect(body.orderId).to.be.a('number'));",
+                  "pm.collectionVariables.set('rel_order_id', String(body.orderId));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "audit — GET /internal/inventory-movements (checkout_deduct)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/internal/inventory-movements?limit=10",
+              "host": ["{{inventory}}"],
+              "path": ["internal", "inventory-movements"],
+              "query": [{ "key": "limit", "value": "10" }]
+            },
+            "description": "Spójność stanu: każdy spadek magazynu z checkoutu jest audytowany w inventory_movements."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('rows is array', () => pm.expect(rows).to.be.an('array'));",
+                  "const hit = rows.find(r => r.reason === 'checkout_deduct');",
+                  "pm.test('found checkout_deduct movement', () => pm.expect(hit).to.exist);",
+                  "pm.test('movement references order', () => pm.expect(hit.order_id).to.eql(Number(pm.collectionVariables.get('rel_order_id'))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cancel — POST /orders/:id/cancel (restore + order_cancel_restore)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/orders/{{rel_order_id}}/cancel",
+              "host": ["{{inventory}}"],
+              "path": ["orders", "{{rel_order_id}}", "cancel"]
+            },
+            "description": "Symetryczny zwrot stanu na variants + ruch kompensacyjny w inventory_movements."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "audit — movements after cancel",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/internal/inventory-movements?limit=20",
+              "host": ["{{inventory}}"],
+              "path": ["internal", "inventory-movements"],
+              "query": [{ "key": "limit", "value": "20" }]
+            },
+            "description": "Szukamy reason=order_cancel_restore dla tego samego order_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const oid = Number(pm.collectionVariables.get('rel_order_id'));",
+                  "const rows = pm.response.json();",
+                  "const hit = rows.find(r => r.reason === 'order_cancel_restore' && r.order_id === oid);",
+                  "pm.test('compensating movement recorded', () => pm.expect(hit).to.exist);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

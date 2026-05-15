@@ -13,7 +13,7 @@ The backend system is designed as a kiosk ordering point. It implements the **Sa
 | Service | Port | Stack | Responsibility |
 |---|---|---|---|
 | `api-gateway` | 3000 | Express + Zod + axios + swagger-ui-express | Public entry point. Routing, input validation, distributed saga orchestration, response aggregation, OpenAPI docs, unified error envelope. |
-| `pg-service` (Inventory & Order) | 3001 | Express + pg + Knex + Sequelize + Prisma | All ACID data: product catalog (`products`, `categories`), stock with `FOR UPDATE` oversell protection, server-side carts (`Carts`, `CartLines`), orders with price snapshots (`Order`, `OrderLine`). |
+| `pg-service` (Inventory & Order) | 3001 | Express + pg + Knex + Sequelize + Prisma | ACID catalog: **`products`**, **`categories`**, relational **`variants` (SKU, price, stock)**, **`inventory_movements`** audit, carts + **`Order`/`OrderLine` price+SKU snapshots**, checkout **`FOR UPDATE` on `variants`**. |
 | `mongo-service` (Catalog & Analytics) | 3002 | Express + mongodb native + Mongoose | All flexible/document data: extended product details with variants (`ProductDetail`), reviews with moderation history (`Review`), telemetry event log, cart drafts, analytics aggregations. |
 | `seeder` (one-shot) | n/a | Reuses api-gateway image | Posts 18 base products through the gateway once both services are healthy. Exits after completion so `docker compose up` requires zero manual steps. |
 | `frontend` | 5173 | React 18 + Vite | Customer storefront + admin panel. Out of scope for the database course grading. |
@@ -40,7 +40,7 @@ flowchart LR
         SEED["seeder<br/>(one-shot)"]
 
         subgraph datastores ["Datastores"]
-            PG[("PostgreSQL :5432<br/>products, categories,<br/>Carts, CartLines,<br/>Order, OrderLine")]
+            PG[("PostgreSQL :5432<br/>products, categories,<br/>variants, inventory_movements,<br/>Carts, CartLines,<br/>Order, OrderLine")]
             MG[("MongoDB :27017<br/>productdetails, reviews,<br/>event_log, cart_draft")]
         end
     end
@@ -74,10 +74,12 @@ sequenceDiagram
         G-->>C: 409 / 400 unified envelope (no compensation needed)
     else PG insert OK
         PG-->>G: 201 { id }
-        G->>MG: POST /internal/product-details (step 2: insert document)
+        G->>PG: POST /internal/products/:id/variants (sku / price / stock rows)
+        PG-->>G: 204
+        G->>MG: POST /internal/product-details (step 3: insert document)
         alt Mongo insert fails (Mongoose validator, duplicate productId, ...)
             MG-->>G: 4xx { error }
-            G->>PG: DELETE /internal/products/:id (compensation)
+            G->>PG: DELETE /internal/products/:id (compensation — cascades variants)
             PG-->>G: 204
             G-->>C: 4xx { error, code, details: { rollbackStatus: "success" } }<br/>+ header X-Rollback-Status: success
         else Mongo insert OK
@@ -100,13 +102,13 @@ sequenceDiagram
     G->>G: Zod validation
     G->>PG: POST /checkout
     PG->>PG: prisma.$transaction (BEGIN)
-    PG->>PG: SELECT ... FOR UPDATE (row lock)
+    PG->>PG: SELECT variants ... FOR UPDATE (row lock)
     alt Stock < requested
         PG-->>G: 409 conflict_oversell
         G-->>C: 409 unified envelope (no telemetry recorded)
     else Stock OK
-        PG->>PG: UPDATE stock; INSERT Order + OrderLines
-        PG->>PG: COMMIT
+        PG->>PG: UPDATE variants.stock; INSERT inventory_movements; INSERT Order + OrderLines
+        PG->>PG: COMMIT (rollup products.stock)
         PG-->>G: 201 { orderId }
         G->>MG: POST /telemetry/event ({ action: "checkout_completed" })<br/>(fire and forget for UX analytics)
         MG-->>G: 201
@@ -114,7 +116,7 @@ sequenceDiagram
     end
 ```
 
-The cancel flow (`POST /api/orders/:id/cancel`) is the symmetric inverse: it updates `Order.status = CANCELLED` and restores stock via `tx.$executeRaw` inside another Prisma transaction.
+The cancel flow (`POST /api/orders/:id/cancel`) is the symmetric inverse: it updates `Order.status = CANCELLED`, restores **`variants.stock`**, writes compensating **`inventory_movements`**, and rollup-syncs `products.stock` — all inside another Prisma transaction.
 
 ## 🚀 Running the Backend (Docker Compose)
 
@@ -194,10 +196,10 @@ curl http://localhost:3000/api-docs.json > openapi.json
 The backend uses **seven** distinct database interaction paradigms in clearly separated bounded contexts:
 
 **PostgreSQL side (pg-service):**
-1. **`pg` native driver** – Singleton pool, parameterized queries (`$1, $2`), SQLSTATE → HTTP mapping (`23505` → 409, `23503` → 400). Powers inventory stock deductions.
-2. **Knex.js** – Schema migrations and domain seeds (categories). Dynamic `WHERE` builder for product catalog filtering (no string concatenation, parameters bound by the builder).
+1. **`pg` native driver** – Singleton pool, parameterized queries (`$1, $2`), SQLSTATE → HTTP mapping (`23505` → 409, `23503` → 400). Powers **`variants`** stock adjustments (`PATCH /inventory/:sku`) with mirrored rollup on `products.stock`.
+2. **Knex.js** – Schema migrations and domain seeds (categories). **`variants`** + **`inventory_movements`** additive migrations. Dynamic `WHERE` builder for product catalog filtering (no string concatenation, parameters bound by the builder).
 3. **Sequelize v6** – Server-side cart (`Cart`, `CartLine`) with explicit model validators, eager loading via `include`, domain hooks (`beforeValidate`, `afterSave`) and managed transactions.
-4. **Prisma ORM** – Order header / order line schema with relations, migration history (`prisma migrate deploy` runs at container start), full CRUD via typed model API, `$queryRaw` tagged templates for `FOR UPDATE` locking and analytics.
+4. **Prisma ORM** – Order header / order line schema with relations (**SKU + unit price snapshots** on each line), migration history (`prisma migrate deploy` runs at container start), full CRUD via typed model API, `$queryRaw` tagged templates **`FOR UPDATE` row locks on `variants`** during checkout and analytics queries.
 
 **MongoDB side (mongo-service):**
 
@@ -217,7 +219,7 @@ The backend implements a defense-in-depth approach. The table below maps concret
 | T4 | **Stack trace / error info leak** (CWE-209) | Global Express error handlers in **all three services** return the unified `{ error, code, details }` envelope. `err.stack` is logged server-side only. | `pgErrorMap`, `mongoErrorMap`, gateway global handler |
 | T5 | **Unique constraint exposure** (CWE-209) | Postgres `SQLSTATE 23505` is mapped to `409 conflict_unique_violation`; FK violation `23503` → `400 foreign_key_violation`. No raw `pg` error object is forwarded. | `pg-service/src/middleware/errorMiddleware.js` |
 | T6 | **Mongoose / Mongo error exposure** | `ValidationError` → 400, `CastError` → 400, duplicate key (11000) → 409, network errors → 503. The client never sees `err.errInfo` or driver internals. | `mongo-service/src/middleware/mongoErrorMiddleware.js` |
-| T7 | **Race condition / oversell** (CWE-362) | `SELECT ... FOR UPDATE` row lock inside a Prisma interactive transaction during checkout. Concurrent oversells are serialized. | `pg-service/src/index.js` (`/checkout`) |
+| T7 | **Race condition / oversell** (CWE-362) | `SELECT … FOR UPDATE` locks **`variants`** rows inside a Prisma interactive checkout transaction so concurrent purchases serialize on SKU-level stock. | `pg-service/src/index.js` (`POST /checkout`) |
 | T8 | **Distributed state corruption** (CWE-460) | Saga Pattern. Failures in step 2 trigger compensating `DELETE` in step 1. Outcome is exposed via `X-Rollback-Status` response header. | `api-gateway/src/index.js` (`POST /api/products`) |
 | T9 | **Payload-flood / DoS** (CWE-770) | `express.json({ limit: '100kb' })` on every service rejects oversized bodies with `413 Payload Too Large`. | all three `index.js` |
 | T10 | **Unhandled rejection / container crash** | `process.on('unhandledRejection', ...)` keeps the container alive and logs the reason instead of letting Node abort. | `pg-service/src/index.js` |

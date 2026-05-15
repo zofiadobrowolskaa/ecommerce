@@ -58,23 +58,36 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   // extended payload: includes variants, materials, gallery
   const { name, sku, price, category_id, long_description, specs, variants, aboutMaterials, gallery } = req.body;
 
-  // aggregate variant stocks so postgres products.stock reflects the real available inventory
-  // (variants are kept in mongo as denormalized data; pg holds the transactional total)
+  // relational variants carry sku / unit price / stock; products.stock stays the rolled-up cache for listing
   const aggregatedStock = Array.isArray(variants)
     ? variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
     : 0;
+  const fallbackStock =
+    aggregatedStock > 0 ? aggregatedStock : (Number(req.body.stock) >= 0 ? Number(req.body.stock) : 0);
+
+  const variantRows =
+    Array.isArray(variants) && variants.length > 0
+      ? variants.map((v) => ({
+          sku: `${sku}__${String(v.id)}`,
+          price: Number(price) + Number(v.priceAdjustment || 0),
+          stock: Number(v.stock ?? 0),
+          label: v.color ? String(v.color) : String(v.id)
+        }))
+      : [{ sku, price: Number(price), stock: fallbackStock, label: 'default' }];
+
+  const rolledUpStock = variantRows.reduce((sum, r) => sum + Number(r.stock || 0), 0);
 
   // will store ID of product created in postgres (needed for step 2 and rollback)
   let createdProductId = null;
 
   try {
-    // step 1: save base product data to postgres (inventory service)
+    // step 1: save base product row (categories FK still lives on products)
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/internal/products`, {
       name,
       sku,
       price,
       category_id,
-      stock: aggregatedStock
+      stock: rolledUpStock
     });
 
     // handle different response shapes (id can be nested or primitive)
@@ -83,7 +96,12 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
         ? pgRes.data.id.id
         : pgRes.data.id;
 
-    // step 2: save product details to mongo (catalog service)
+    // step 2: persist sku-grain inventory rows required by the relational model (variants table)
+    await axios.post(`${INVENTORY_SERVICE}/internal/products/${createdProductId}/variants`, {
+      variants: variantRows
+    });
+
+    // step 3: save flexible catalog document to mongo (extended presentation layer)
     await axios.post(`${CATALOG_SERVICE}/internal/product-details`, {
       productId: createdProductId, 
       longDescription: long_description || req.body.description, // fallback support for legacy field
@@ -103,7 +121,7 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
     // track rollback attempt status for observability/debugging
     let rollbackStatus = 'not_attempted';
 
-    // compensation: if step 2 (mongo) failed, undo step 1 (pg) by deleting the row
+    // compensation: failure after base insert rolls back postgres row (variants CASCADE delete)
     if (createdProductId) {
       try {
         await axios.delete(`${INVENTORY_SERVICE}/internal/products/${createdProductId}`);

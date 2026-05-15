@@ -252,13 +252,13 @@ const swaggerDocument = {
     '/api/checkout': {
       post: {
         tags: ['Checkout'],
-        summary: 'Transactional checkout (PG SELECT FOR UPDATE + Mongo telemetry)',
+        summary: 'Transactional checkout (variants SELECT FOR UPDATE + Prisma tx + Mongo telemetry)',
         requestBody: {
           required: true,
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/CheckoutRequest' },
-              example: { userId: 'user-123', items: [{ productId: 1, quantity: 2, price: 250 }] }
+              example: { userId: 'user-123', items: [{ productId: 1, sku: 'p001__v001a', quantity: 2, price: 250 }] }
             }
           }
         },
@@ -367,6 +367,11 @@ const swaggerDocument = {
               properties: {
                 id: { type: 'integer' },
                 productId: { type: 'integer' },
+                variantSku: {
+                  type: 'string',
+                  nullable: true,
+                  description: 'Optional pinned variants.sku copied from Sequelize CartLine.variantSku'
+                },
                 quantity: { type: 'integer' },
                 priceAtEntry: { type: 'number' }
               }
@@ -385,6 +390,8 @@ const swaggerDocument = {
               required: ['productId', 'quantity', 'price'],
               properties: {
                 productId: { type: 'integer' },
+                sku: { type: 'string', description: 'Optional variants.sku' },
+                variantSku: { type: 'string', description: 'Alias of sku for cart round-trips' },
                 quantity: { type: 'integer', minimum: 1 },
                 price: { type: 'number', minimum: 0 }
               }
@@ -404,6 +411,11 @@ const swaggerDocument = {
               required: ['productId', 'quantity', 'price'],
               properties: {
                 productId: { type: 'integer' },
+                sku: {
+                  type: 'string',
+                  description: 'Optional concrete variants.sku — required for multi-SKU products at checkout'
+                },
+                variantSku: { type: 'string', description: 'Alias of sku' },
                 quantity: { type: 'integer', minimum: 1 },
                 price: { type: 'number', minimum: 0 }
               }
