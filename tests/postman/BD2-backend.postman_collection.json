@@ -1654,6 +1654,187 @@
           ]
         }
       ]
+    },
+    {
+      "name": "12. openapi contract",
+      "item": [
+        {
+          "name": "swagger ui is served at /api-docs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs/", "host": ["{{gateway}}"], "path": ["api-docs", ""] },
+            "description": "Swagger UI musi byc dostepne dla recenzenta pod /api-docs."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('content-type is html', () => pm.expect(pm.response.headers.get('Content-Type')).to.match(/text\\/html/));",
+                  "pm.test('html contains Swagger UI', () => pm.expect(pm.response.text()).to.match(/Swagger UI/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "raw openapi spec is downloadable as JSON (GET /api-docs.json)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Publikowalna specyfikacja - mozna ja zaciagnac curl'em i karmic postmanem / openapi-generator'em."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('content-type is application/json', () => pm.expect(pm.response.headers.get('Content-Type')).to.match(/application\\/json/));",
+                  "const spec = pm.response.json();",
+                  "pm.test('is openapi 3.x', () => pm.expect(spec.openapi).to.match(/^3\\./));",
+                  "pm.test('has info.title and info.version', () => { pm.expect(spec.info.title).to.be.a('string'); pm.expect(spec.info.version).to.be.a('string'); });",
+                  "pm.test('declares servers', () => pm.expect(spec.servers).to.be.an('array').that.is.not.empty);",
+                  "pm.test('declares tags', () => pm.expect(spec.tags).to.be.an('array').that.is.not.empty);",
+                  "pm.test('defines reusable schemas (Error, Product, Cart, ...)', () => {",
+                  "  pm.expect(spec.components.schemas).to.include.all.keys('Error', 'Product', 'ProductCreateRequest', 'Cart', 'CartSyncRequest', 'CheckoutRequest');",
+                  "});",
+                  "pm.test('Error schema is the unified envelope', () => {",
+                  "  const props = spec.components.schemas.Error.properties;",
+                  "  pm.expect(props).to.include.all.keys('error', 'code', 'details');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "spec lists every public endpoint",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Recenzent moze sprawdzic ze kazdy publiczny endpoint jest udokumentowany."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const spec = pm.response.json();",
+                  "const expected = [",
+                  "  '/health',",
+                  "  '/api/products',",
+                  "  '/api/products/{id}',",
+                  "  '/api/cart/{userId}',",
+                  "  '/api/cart/{userId}/sync',",
+                  "  '/api/checkout',",
+                  "  '/api/orders/{orderId}/cancel'",
+                  "];",
+                  "expected.forEach(p => {",
+                  "  pm.test(`path ${p} is documented`, () => pm.expect(spec.paths).to.have.property(p));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/products has request example and 201/4xx responses",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Wymaganie 12: kazdy endpoint ma przykladowe zadania i odpowiedzi."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const spec = pm.response.json();",
+                  "const op = spec.paths['/api/products'].post;",
+                  "pm.test('summary is present', () => pm.expect(op.summary).to.be.a('string').that.is.not.empty);",
+                  "pm.test('request body has example', () => {",
+                  "  pm.expect(op.requestBody.content['application/json'].example).to.be.an('object');",
+                  "  pm.expect(op.requestBody.content['application/json'].example.sku).to.be.a('string');",
+                  "});",
+                  "pm.test('response 201 documented', () => pm.expect(op.responses['201']).to.be.an('object'));",
+                  "pm.test('response 400 documented (Zod)', () => pm.expect(op.responses['400']).to.be.an('object'));",
+                  "pm.test('response 409 documented (saga conflict)', () => pm.expect(op.responses['409']).to.be.an('object'));",
+                  "pm.test('response 500 documents X-Rollback-Status header', () => {",
+                  "  pm.expect(op.responses['500'].headers['X-Rollback-Status']).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/checkout documents oversell 409 and example body",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api-docs.json", "host": ["{{gateway}}"], "path": ["api-docs.json"] },
+            "description": "Najwazniejszy endpoint (saga + transakcja) ma udokumentowany 409 oversell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const spec = pm.response.json();",
+                  "const op = spec.paths['/api/checkout'].post;",
+                  "pm.test('request example shows userId + items', () => {",
+                  "  const ex = op.requestBody.content['application/json'].example;",
+                  "  pm.expect(ex.userId).to.be.a('string');",
+                  "  pm.expect(ex.items).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('201 example returns orderId', () => {",
+                  "  pm.expect(op.responses['201'].content['application/json'].example).to.have.property('orderId');",
+                  "});",
+                  "pm.test('409 response is the conflict_oversell case', () => {",
+                  "  const ex = op.responses['409'].content['application/json'].example;",
+                  "  pm.expect(JSON.stringify(ex)).to.match(/conflict_oversell/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "live request matches documented example - POST /api/checkout (validation error)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"contract-check\"\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Live verification - request bez 'items' musi zwrocic 400 z envelope tak jak opisuje spec."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('matches documented Error schema (error, code, details)', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code equals 400 number', () => pm.expect(body.code).to.eql(400));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

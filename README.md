@@ -177,9 +177,10 @@ A documented template lives in [`.env.example`](.env.example). Copy it to `.env`
 
 ## 📡 API Documentation (OpenAPI / Swagger)
 
-The gateway exposes a fully interactive **OpenAPI 3.0** contract documenting endpoints, request bodies, query parameters and response shapes (including the unified `{ error, code, details }` envelope).
+The gateway exposes a fully interactive **OpenAPI 3.0** contract documenting endpoints, request bodies, query parameters, response shapes (including the unified `{ error, code, details }` envelope) and the `X-Rollback-Status` saga header.
 
-- **Swagger UI:** http://localhost:3000/api-docs
+- **Swagger UI (interactive):** http://localhost:3000/api-docs
+- **Raw spec (publishable JSON):** http://localhost:3000/api-docs.json
 
 ## 🛠️ Database Technologies & ORMs (Polyglot Implementation)
 

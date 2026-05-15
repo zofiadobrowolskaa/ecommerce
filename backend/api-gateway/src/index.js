@@ -25,6 +25,13 @@ app.get('/health', (req, res) => {
 // mount openapi swagger ui
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
+// expose raw openapi 3.0 contract as downloadable json
+// makes the spec "publishable" - other tools (postman, openapi-generator, redoc) can ingest it
+app.get('/api-docs.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  res.status(200).send(JSON.stringify(swaggerDocument, null, 2));
+});
+
 // service urls injected via env so the gateway can be reconfigured without code changes
 // defaults point to docker compose service names on the internal network
 const INVENTORY_SERVICE = process.env.INVENTORY_SERVICE_URL || 'http://pg-service:3001';
