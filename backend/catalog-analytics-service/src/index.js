@@ -277,8 +277,10 @@ app.get('/product-details/:productId', async (req, res, next) => {
       return sendError(res, 404, 'not_found', `product details for ${req.params.productId} not found`);
     }
 
-    // fetch approved reviews to attach to details
-    const reviews = await Review.find({ productId: id, status: 'APPROVED' });
+    // newest-first so clients see "latest reviews" without an extra round trip
+    const reviews = await Review.find({ productId: id, status: 'APPROVED' }).sort({
+      createdAt: -1
+    });
 
     res.status(200).json({
       ...detail.toObject(),
@@ -296,7 +298,14 @@ app.use(mongoErrorMap);
 
 const PORT = process.env.PORT || 3002;
 
-// init both drivers before starting app
-Promise.all([connectMongo(), connectMongoose()]).then(() => {
-  app.listen(PORT, () => console.log(`catalog service running on ${PORT}`));
-});
+// init both drivers before starting app; sync mongoose-declared indexes (reviews timelines + aggregation prefixes)
+Promise.all([connectMongo(), connectMongoose()])
+  .then(async () => {
+    await Review.syncIndexes();
+    await ProductDetail.syncIndexes();
+    app.listen(PORT, () => console.log(`catalog service running on ${PORT}`));
+  })
+  .catch((err) => {
+    console.error('catalog_service_startup_failed', err);
+    process.exit(1);
+  });

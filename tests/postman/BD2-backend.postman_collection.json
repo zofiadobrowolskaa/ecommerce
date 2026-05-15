@@ -2466,6 +2466,171 @@
           ]
         }
       ]
+    },
+    {
+      "name": "16. model dokumentowy — mongo",
+      "item": [
+        {
+          "name": "productdetails shape — GET /product-details/:productId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/product-details/1",
+              "host": ["{{catalog}}"],
+              "path": ["product-details", "1"]
+            },
+            "description": "Wymaganie 16: dokument ProductDetail — productId, longDescription, specs (map), gallery[]. Zakładamy rekord po seederze (productId=1)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('has catalog fields', () => pm.expect(b).to.include.keys('productId', 'longDescription', 'specs', 'gallery'));",
+                  "pm.test('reviews attached array', () => pm.expect(b.reviews).to.be.an('array'));",
+                  "pm.test('numeric product key', () => pm.expect(b.productId).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reviews — POST /reviews (approved seed for aggregation)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": 1,\n  \"userId\": \"{{doc16_uid}}\",\n  \"rating\": 5,\n  \"title\": \"Quality piece\",\n  \"body\": \"really happy with purchase overall\",\n  \"status\": \"APPROVED\"\n}"
+            },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Minimal treść spełnia walidator ≥3 słów w body. Status APPROVED — od razu widoczny na liście i w pipeline średniej oceny."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('doc16_uid', 'doc16-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created 201', () => pm.response.to.have.status(201));",
+                  "const r = pm.response.json();",
+                  "pm.test('moderation fields exist', () => pm.expect(r).to.include.keys('productId','userId','rating','title','body','status'));",
+                  "pm.test('timeline field createdAt', () => pm.expect(r).to.have.property('createdAt'));",
+                  "pm.collectionVariables.set('doc16_review_id', r._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reviews — GET /reviews/:productId (latest first + index-backed query)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/reviews/1",
+              "host": ["{{catalog}}"],
+              "path": ["reviews", "1"]
+            },
+            "description": "Lista zatwierdzonych recenzji malejąco po createdAt — indeks złożony { productId, status, createdAt }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('array response', () => pm.expect(rows).to.be.an('array'));",
+                  "rows.forEach((r) => pm.expect(r).to.have.property('createdAt'));",
+                  "for (let i = 1; i < rows.length; i++) {",
+                  "  const a = rows[i - 1].createdAt;",
+                  "  const b = rows[i].createdAt;",
+                  "  if (a && b) {",
+                  "    pm.expect(new Date(a).getTime()).to.be.at.least(new Date(b).getTime());",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation — GET /analytics/average-ratings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/analytics/average-ratings?limit=15",
+              "host": ["{{catalog}}"],
+              "path": ["analytics", "average-ratings"],
+              "query": [{ "key": "limit", "value": "15" }]
+            },
+            "description": "Pipeline grupuje APPROVED reviews po productId ($match korzysta z prefiksu indeksu { status, productId })."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rep = pm.response.json();",
+                  "pm.test('report array', () => pm.expect(rep).to.be.an('array'));",
+                  "const row = rep.find((x) => x.productId === 1);",
+                  "pm.test('product 1 present', () => pm.expect(row).to.exist);",
+                  "pm.test('avg shape', () => pm.expect(row).to.include.keys('avgRating','reviewCount'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "moderation trail — POST /reviews/:id/moderate",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"reject\",\n  \"moderatorId\": \"examiner-bot\",\n  \"reason\": \"policy demo\"\n}"
+            },
+            "url": {
+              "raw": "{{catalog}}/reviews/{{doc16_review_id}}/moderate",
+              "host": ["{{catalog}}"],
+              "path": ["reviews", "{{doc16_review_id}}", "moderate"]
+            },
+            "description": "Zmiana statusu + dopisanie wpisu do moderationHistory[] (workflow moderacji z wymagania)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('moderate 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test('status updated', () => pm.expect(r.status).to.eql('REJECTED'));",
+                  "pm.test('history appended', () => pm.expect(r.moderationHistory).to.be.an('array').that.is.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

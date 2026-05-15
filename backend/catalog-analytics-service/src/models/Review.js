@@ -28,7 +28,7 @@ const moderationEntrySchema = new mongoose.Schema({
 }, { _id: false });
 
 const reviewSchema = new mongoose.Schema({
-  productId: { type: Number, required: true, index: true },
+  productId: { type: Number, required: true },
   userId: { type: String, required: true },
   rating: {
     type: Number,
@@ -64,6 +64,8 @@ const reviewSchema = new mongoose.Schema({
     enum: ['PENDING', 'APPROVED', 'REJECTED'],
     default: 'PENDING'
   },
+  // immutable-ish timeline for "latest reviews" feeds (distinct from updatedAt which bumps on moderation edits)
+  createdAt: { type: Date, default: Date.now },
   // first nested array of subdocuments: image gallery
   gallery: [reviewImageSchema],
   // second nested array of subdocuments: moderation audit trail
@@ -91,7 +93,7 @@ reviewSchema.pre('save', function() {
 
 // static method: convenience finder used by the public endpoint
 reviewSchema.statics.findByProduct = function(productId) {
-  return this.find({ productId, status: 'APPROVED' });
+  return this.find({ productId, status: 'APPROVED' }).sort({ createdAt: -1 });
 };
 
 // instance method: approve review and append entry to moderation history
@@ -112,5 +114,8 @@ reviewSchema.methods.reject = function(moderatorId, reason) {
 // supports the first $match on status (index prefix) and then groups by productId
 // without a collection scan
 reviewSchema.index({ status: 1, productId: 1 });
+
+// supports approved-review timelines per product ("latest reviews" list with newest-first sort)
+reviewSchema.index({ productId: 1, status: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Review', reviewSchema);

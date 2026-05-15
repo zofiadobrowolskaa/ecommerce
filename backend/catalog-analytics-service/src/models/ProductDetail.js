@@ -35,6 +35,7 @@ const variantSchema = new mongoose.Schema({
   sku: String
 }, { _id: false });
 
+// graded document shape:  numeric product key, flexible specs map, media gallery array
 const productDetailSchema = new mongoose.Schema({
   productId: { type: Number, required: true, unique: true },
   longDescription: String,
