@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 Write-Host "==> wiping volumes and containers"
 docker compose down -v
 
-Write-Host "==> building and starting stack"
+Write-Host "==> building and starting stack (seeder runs automatically when gateway is healthy)"
 docker compose up -d --build
 
 Write-Host "==> waiting for gateway, inventory and catalog to report healthy"
@@ -32,10 +32,8 @@ if ($attempts -eq 60) {
     exit 1
 }
 
-Write-Host "==> seeding products"
-Push-Location backend\api-gateway
-node seed-products.js
-Pop-Location
+Write-Host "==> waiting for the seeder one-shot to finish"
+docker compose logs seeder
 
 Write-Host "==> sanity check: products in postgres"
 docker exec spa-postgres-1 psql -U user -d ecommerce_db -c "SELECT id, sku, name, stock FROM products ORDER BY id LIMIT 5;"

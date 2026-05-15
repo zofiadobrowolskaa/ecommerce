@@ -1143,6 +1143,114 @@
           ]
         }
       ]
+    },
+    {
+      "name": "7. aggregation pipeline",
+      "item": [
+        {
+          "name": "setup - reset data + 2 approved reviews (POST /test/setup)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{catalog}}/test/setup", "host": ["{{catalog}}"], "path": ["test", "setup"] },
+            "description": "Tworzy ProductDetail(productId=1) + 2 APPROVED reviews (rating 5 i 4). Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation report - top products by rating (GET /analytics/average-ratings)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/analytics/average-ratings", "host": ["{{catalog}}"], "path": ["analytics", "average-ratings"] },
+            "description": "Pipeline: $match -> $group -> $lookup -> $unwind -> $sort -> $limit -> $project. Oczekiwane: 200 + tablica z productId, avgRating, reviewCount, productName."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns array', () => pm.expect(body).to.be.an('array'));",
+                  "pm.test('product 1 has avgRating 4.5 and 2 reviews', () => {",
+                  "  const p = body.find(r => r.productId === 1);",
+                  "  pm.expect(p).to.exist;",
+                  "  pm.expect(p.avgRating).to.eql(4.5);",
+                  "  pm.expect(p.reviewCount).to.eql(2);",
+                  "});",
+                  "pm.test('output has projected fields only', () => {",
+                  "  const p = body.find(r => r.productId === 1);",
+                  "  pm.expect(p).to.have.all.keys('productId', 'avgRating', 'reviewCount', 'productName');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation report respects ?limit (GET /analytics/average-ratings?limit=1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/analytics/average-ratings?limit=1",
+              "host": ["{{catalog}}"],
+              "path": ["analytics", "average-ratings"],
+              "query": [{ "key": "limit", "value": "1" }]
+            },
+            "description": "Stage $limit przepuszcza max 1 element. Oczekiwane: 200 + dokladnie 1 wiersz."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns at most 1 product', () => pm.expect(pm.response.json().length).to.be.at.most(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "explain plan shows first $match uses index (GET /analytics/average-ratings/explain)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/analytics/average-ratings/explain", "host": ["{{catalog}}"], "path": ["analytics", "average-ratings", "explain"] },
+            "description": "Mongo query planner pokazuje IXSCAN dla pierwszego $match. Oczekiwane: 200 + winningPlan z IXSCAN."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('winning plan uses index scan (IXSCAN) on status', () => {",
+                  "  const text = JSON.stringify(pm.response.json());",
+                  "  pm.expect(text).to.match(/IXSCAN/);",
+                  "  pm.expect(text).to.match(/status/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

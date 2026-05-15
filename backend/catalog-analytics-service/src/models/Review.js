@@ -108,4 +108,9 @@ reviewSchema.methods.reject = function(moderatorId, reason) {
   return this.save();
 };
 
+// compound index dedicated to the analytics aggregation pipeline:
+// supports the first $match on status (index prefix) and then groups by productId
+// without a collection scan
+reviewSchema.index({ status: 1, productId: 1 });
+
 module.exports = mongoose.model('Review', reviewSchema);

@@ -159,32 +159,42 @@ app.post('/reviews/:id/moderate', async (req, res) => {
   }
 });
 
-// analytical endpoint using aggregation pipeline
+// analytical endpoint using aggregation pipeline executed in the database engine
+// optional ?limit=N query param controls how many top products are returned
 app.get('/analytics/average-ratings', async (req, res) => {
   try {
+    const limit = Math.min(Number(req.query.limit) || 10, 100);
+
     const report = await Review.aggregate([
-      // stage 1: match approved reviews (uses index)
+      // stage 1: $match on indexed field (compound index { status, productId })
+      // mongoDb uses the index to filter without a full collection scan
       { $match: { status: 'APPROVED' } },
-      
-      // stage 2: group by product and calculate average
-      { $group: { 
-          _id: "$productId", 
+
+      // stage 2: $group by product, compute average rating and review count
+      { $group: {
+          _id: "$productId",
           avgRating: { $avg: "$rating" },
           reviewCount: { $sum: 1 }
       } },
-      
-      // stage 3: join with product details
+
+      // stage 3: $lookup to attach the product detail document (cross-collection join)
       { $lookup: {
           from: "productdetails",
           localField: "_id",
           foreignField: "productId",
           as: "details"
       } },
-      
-      // unwind array from lookup to format correctly
+
+      // stage 4: $unwind flattens the details array into a single object
       { $unwind: "$details" },
-      
-      // stage 4: project final format
+
+      // stage 5: $sort by average rating desc, then review count desc for tie-breaking
+      { $sort: { avgRating: -1, reviewCount: -1 } },
+
+      // stage 6: $limit returns only the top N products for a typical top-N analytics report
+      { $limit: limit },
+
+      // stage 7: $project the final response shape
       { $project: {
           _id: 0,
           productId: "$_id",
@@ -195,6 +205,21 @@ app.get('/analytics/average-ratings', async (req, res) => {
     ]);
 
     res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// explain endpoint used to prove the first $match is served by the compound index
+// returns mongo's query planner output for inspection / tests
+app.get('/analytics/average-ratings/explain', async (req, res) => {
+  try {
+    const explain = await Review.aggregate([
+      { $match: { status: 'APPROVED' } },
+      { $group: { _id: "$productId", avgRating: { $avg: "$rating" } } }
+    ]).explain('queryPlanner');
+
+    res.json(explain);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
