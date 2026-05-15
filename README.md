@@ -206,6 +206,19 @@ The backend uses **seven** distinct database interaction paradigms in clearly se
 
 **MongoDB document model (graded scope):** the examined catalog lives in **`productdetails`** (`ProductDetail`: `productId`, `longDescription`, `specs` as a `Map`, `gallery[]`, …) and **`reviews`** (`Review`: `productId`, `userId`, `rating`, `title`, `body`, moderation `status`, nested `moderationHistory[]`). Supporting indexes include **`{ status: 1, productId: 1 }`** for the average-rating aggregation prefix match and **`{ productId: 1, status: 1, createdAt: -1 }`** for newest-first “latest reviews” reads. **`wishlists`** is an **additional** collection exercised through the **native driver** (requirement 5 demo); it demonstrates `$push`/`$inc`/`$set`/`$pull` and the compound + text indexes — **it does not replace** the graded product-detail + review document design above.
 
+## 📜 Business Rules
+
+Every rule below is enforced by the database layer **and** the REST API. The table maps each rule to the file that implements it.
+
+| # | Business rule | How it is enforced | Where in code |
+|---|---|---|---|
+| BR1 | **Price change does not modify historical `order_lines`.** Snapshot of unit price taken at checkout. | `OrderLine.price` is a `Decimal` column populated from `items[].price` during the Prisma checkout transaction. `PATCH /api/products/:id/price` updates only `products.price` — it deliberately never touches `OrderLine`. | `prisma/schema.prisma` (`OrderLine.price`), `inventory-order-service/src/index.js` (`POST /checkout`, `PATCH /products/:id/price`) |
+| BR2 | **Cancelling an order restores stock.** Audit-logged as a separate `inventory_movements` row. | `POST /api/orders/:id/cancel` runs a Prisma transaction that flips `Order.status='CANCELLED'`, executes `UPDATE variants SET stock = stock + line.quantity` for every line, inserts a compensating `inventory_movements` row with `reason='order_cancel_restore'`, and re-rolls `products.stock`. | `inventory-order-service/src/index.js` (`POST /orders/:id/cancel`) |
+| BR3 | **SKU is globally unique** at both product and variant grain. | `products.sku` has `UNIQUE` (Knex migration 0001). `variants.sku` has `.notNullable().unique()` (Knex migration `create_variants_and_inventory_movements`). PG `SQLSTATE 23505` is mapped to `409 conflict_unique_violation` by the pg error middleware. | `migrations/20260425210152_create_products.js`, `migrations/20260515140000_create_variants_and_inventory_movements.js`, `inventory-order-service/src/middleware/errorMiddleware.js` |
+| BR4 | **Cart / checkout conflict when stock is depleted.** Returns `409` with a domain code. | `POST /api/cart/:userId/add` performs an explicit stock check before insert and returns `409 insufficient_stock` with `{ available, requested }`. `POST /api/checkout` row-locks variants via `SELECT … FOR UPDATE` and aborts with `409 conflict_oversell` when any line exceeds available stock. | `inventory-order-service/src/index.js` (`POST /cart/:userId/add`, `POST /checkout`) |
+| BR5 | **Unified error contract.** Every failure crosses the wire as the same envelope. | `{ error: string, code: number, details: any }` returned by all three services. PG codes (`23505`, `23503`) and Mongo codes (`11000`, `ValidationError`, `CastError`) are mapped to HTTP + a stable domain string by middleware — no raw driver objects ever leave the process. | `api-gateway/src/index.js` (`sendError`), `inventory-order-service/src/middleware/errorMiddleware.js`, `catalog-analytics-service/src/middleware/mongoErrorMiddleware.js` |
+
+
 ## 🛡️ Security & Threat Mitigation
 
 The backend implements a defense-in-depth approach. The table below maps concrete threats to the layer that mitigates them.

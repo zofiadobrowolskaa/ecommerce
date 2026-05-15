@@ -150,6 +150,18 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   }
 });
 
+// update product price (business rule: price change does not touch order_lines).
+// snapshot semantics live in the OrderLine model (price column filled at checkout)
+// so this proxy intentionally only forwards the products.price update.
+app.patch('/api/products/:id/price', async (req, res) => {
+  try {
+    const r = await axios.patch(`${INVENTORY_SERVICE}/products/${req.params.id}/price`, req.body);
+    res.json(r.data);
+  } catch (e) {
+    handleError(res, e, 'price_update_failed');
+  }
+});
+
 // proxy product list: fetch base products from inventory and enrich with catalog details
 app.get('/api/products', async (req, res) => {
   try {

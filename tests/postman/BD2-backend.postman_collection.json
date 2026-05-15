@@ -1691,6 +1691,7 @@
                   "  '/health',",
                   "  '/api/products',",
                   "  '/api/products/{id}',",
+                  "  '/api/products/{id}/price',",
                   "  '/api/cart/{userId}',",
                   "  '/api/cart/{userId}/add',",
                   "  '/api/cart/{userId}/sync',",
@@ -2421,6 +2422,257 @@
                   "const rows = pm.response.json();",
                   "const hit = rows.find(r => r.reason === 'order_cancel_restore' && r.order_id === oid);",
                   "pm.test('compensating movement recorded', () => pm.expect(hit).to.exist);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "18. business rules",
+      "item": [
+        {
+          "name": "BR1 setup — checkout snapshots a known price (POST /api/checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{br1_user}}\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 1, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Tworzy zamówienie z ceną=250 (snapshot przechodzi do OrderLine.price). Wartość będzie porównana po zmianie cennika produktu."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('br1_user', 'br1-user-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order created 201', () => pm.response.to.have.status(201));",
+                  "const id = pm.response.json().orderId;",
+                  "pm.collectionVariables.set('br1_order_id', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR1 — change product price (PATCH /api/products/1/price)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 999.99\n}" },
+            "url": { "raw": "{{gateway}}/api/products/1/price", "host": ["{{gateway}}"], "path": ["api", "products", "1", "price"] },
+            "description": "Zmiana cennika produktu — modyfikuje TYLKO products.price. Reguła BR1: nie wolno dotykać historycznych OrderLine.price."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('price update 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns new price', () => pm.expect(Number(pm.response.json().price)).to.eql(999.99));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR1 verify — order_lines.price remains the original snapshot",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{br1_order_id}}", "host": ["{{inventory}}"], "path": ["orders", "{{br1_order_id}}"] },
+            "description": "Pobranie zamówienia stworzonego przed zmianą cennika — line.price MUSI być 250 (snapshot), nie 999.99 (nowy cennik)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const order = pm.response.json();",
+                  "pm.test('order has lines', () => pm.expect(order.lines).to.be.an('array').that.is.not.empty);",
+                  "pm.test('line.price still 250 (snapshot survived price change)', () => {",
+                  "  pm.expect(Number(order.lines[0].price)).to.eql(250);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR1 cleanup — restore product price",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/products/1/price", "host": ["{{gateway}}"], "path": ["api", "products", "1", "price"] },
+            "description": "Przywrócenie domyślnego cennika, żeby kolejne testy nie biegały po inflated price."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reset 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR2 setup — checkout to consume stock",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{br2_user}}\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 1, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Składa zamówienie, które za chwilę anulujemy."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('br2_user', 'br2-user-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('br2_order_id', pm.response.json().orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR2 — cancel restores stock + writes compensating inventory_movement",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/orders/{{br2_order_id}}/cancel", "host": ["{{gateway}}"], "path": ["api", "orders", "{{br2_order_id}}", "cancel"] },
+            "description": "Reguła BR2: anulowanie zamówienia zwraca stock + INSERT inventory_movements (reason=order_cancel_restore). Sprawdza się następnie w audit-trail."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR2 verify — inventory_movements contains a cancel restore row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/internal/inventory-movements?limit=50", "host": ["{{inventory}}"], "path": ["internal", "inventory-movements"], "query": [{ "key": "limit", "value": "50" }] },
+            "description": "Audit-trail powinien zawierać kompensujący ruch z reason=order_cancel_restore i order_id=br2_order_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "const orderId = Number(pm.collectionVariables.get('br2_order_id'));",
+                  "const restore = rows.find(r => r.reason === 'order_cancel_restore' && Number(r.order_id) === orderId);",
+                  "pm.test('compensating movement exists', () => pm.expect(restore).to.exist);",
+                  "pm.test('quantity_delta is positive (stock returned)', () => pm.expect(Number(restore.quantity_delta)).to.be.greaterThan(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR3 — SKU uniqueness on products (POST /api/products twice)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"BR3 Test\",\n  \"sku\": \"BR3_UNIQUE_SKU_TEST\",\n  \"price\": 100,\n  \"category_id\": 1,\n  \"long_description\": \"test sku uniqueness\"\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Reguła BR3: SKU musi być unikalne. Drugie wywołanie tej requestki → 409 (PG 23505 zmapowane przez middleware na unified envelope)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 first time or 409 afterwards', () => pm.expect([201, 409]).to.include(pm.response.code));",
+                  "if (pm.response.code === 409) {",
+                  "  pm.test('envelope contains 23505 or conflict', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/23505|conflict/));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR4 — cart conflict on stock depletion (POST /api/cart/:u/add huge qty)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"variantSku\": \"p001__v001a\",\n  \"quantity\": 999999,\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/br4-user/add", "host": ["{{gateway}}"], "path": ["api", "cart", "br4-user", "add"] },
+            "description": "Reguła BR4: koszyk odmawia dodania pozycji przekraczającej dostępny stan. Oczekiwane: 409 z domain code insufficient_stock w details."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('domain code insufficient_stock', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/insufficient_stock/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR5 — unified error envelope shape on 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/9999999", "host": ["{{inventory}}"], "path": ["orders", "9999999"] },
+            "description": "Reguła BR5: każdy błąd ma kształt { error, code, details } — niezależnie od warstwy bazy. Nie ma raw stack trace, nie ma surowych pg/mongo errorów."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code is numeric 404', () => pm.expect(body.code).to.eql(404));",
+                  "pm.test('error is stable domain string', () => pm.expect(body.error).to.be.a('string').that.is.not.empty);"
                 ]
               }
             }

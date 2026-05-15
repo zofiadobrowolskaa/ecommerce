@@ -112,6 +112,30 @@ app.get('/products/:id', async (req, res, next) => {
   }
 });
 
+// update product price - business rule:
+// changing products.price must never mutate historical order_lines.price snapshots.
+// the snapshot lives on OrderLine.price (set at checkout from items[].price),
+// so this endpoint deliberately touches ONLY the products table.
+app.patch('/products/:id/price', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const { price } = req.body || {};
+    if (!Number.isFinite(id)) {
+      return sendError(res, 400, 'invalid_id', 'productId must be numeric');
+    }
+    if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) {
+      return sendError(res, 400, 'invalid_price', 'price must be a non-negative number');
+    }
+    const updated = await knex('products').where({ id }).update({ price }).returning(['id', 'sku', 'price']);
+    if (!updated.length) {
+      return sendError(res, 404, 'not_found', `product ${id} not found`);
+    }
+    res.json(updated[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // internal endpoint for gateway to create product
 app.post('/internal/products', async (req, res, next) => {
   try {
@@ -472,7 +496,7 @@ app.get('/orders', async (req, res, next) => {
   }
 });
 
-// per-user order history — requirement 17 "historia zamówień użytkownika"
+// per-user order history 
 // uses the compound index { userId, createdAt } for index-only scan in chronological order
 app.get('/orders/user/:userId', async (req, res, next) => {
   try {

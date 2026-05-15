@@ -228,6 +228,39 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/products/{id}/price': {
+      patch: {
+        tags: ['Products'],
+        summary: 'Update product list price (req 18 business rule: snapshot-safe)',
+        description:
+          'Changes products.price only. Historical OrderLine.price snapshots are intentionally not touched, ' +
+          'so existing orders keep the price the buyer originally paid.',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' }, example: 1 }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { type: 'object', required: ['price'], properties: { price: { type: 'number', minimum: 0 } } },
+              example: { price: 299.99 }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Updated product row (only id, sku, price)',
+            content: { 'application/json': { example: { id: 1, sku: 'AURA-001', price: 299.99 } } }
+          },
+          400: {
+            description: 'invalid_id or invalid_price',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          404: {
+            description: 'Product not found',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          }
+        }
+      }
+    },
     '/api/cart/{userId}/add': {
       post: {
         tags: ['Cart'],
