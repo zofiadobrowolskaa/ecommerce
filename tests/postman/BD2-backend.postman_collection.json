@@ -922,6 +922,227 @@
           ]
         }
       ]
+    },
+    {
+      "name": "6. mongoose",
+      "item": [
+        {
+          "name": "setup - seed product detail + 2 approved reviews (POST /test/setup)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{catalog}}/test/setup", "host": ["{{catalog}}"], "path": ["test", "setup"] },
+            "description": "Tworzy ProductDetail(productId=1) i 2 approved reviews. Oczekiwane: 200 z tresctowym 'test data created successfully'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "populate: GET /reviews/:productId returns reviews with productDetail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/reviews/1", "host": ["{{catalog}}"], "path": ["reviews", "1"] },
+            "description": "Static findByProduct + virtual populate. Kazda recenzja ma osadzone productDetail. Oczekiwane: 200, productDetail.longDescription = 'Golden Necklace'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns array of reviews', () => pm.expect(body).to.be.an('array').that.is.not.empty);",
+                  "pm.test('productDetail is populated', () => {",
+                  "  pm.expect(body[0].productDetail).to.be.an('object');",
+                  "  pm.expect(body[0].productDetail.longDescription).to.eql('Golden Necklace');",
+                  "});",
+                  "pm.collectionVariables.set('lastReviewId', body[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "custom validator: rating must be integer (POST /reviews)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-frac\",\n  \"rating\": 4.5,\n  \"title\": \"Mixed\",\n  \"body\": \"this is a valid body length\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Rating 4.5 narusza custom Number.isInteger validator. Oczekiwane: 400 z wzmianka o 'integer'."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error mentions integer rule', () => pm.expect(pm.response.text()).to.match(/integer/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "custom validator: title cannot be all uppercase",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-loud\",\n  \"rating\": 5,\n  \"title\": \"AMAZING DEAL\",\n  \"body\": \"this is a valid body length\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Title 'AMAZING DEAL' jest caly uppercase. Custom validator odrzuca. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error mentions uppercase rule', () => pm.expect(pm.response.text()).to.match(/uppercase/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "custom validator: body must have at least 3 words",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-short\",\n  \"rating\": 5,\n  \"title\": \"Great\",\n  \"body\": \"awesome\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Body z jednym slowem narusza min 3 words validator. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error mentions 3 words rule', () => pm.expect(pm.response.text()).to.match(/3 words/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "valid review with gallery (subdocs array) - POST /reviews",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-with-images\",\n  \"rating\": 5,\n  \"title\": \"Loved it\",\n  \"body\": \"truly exceptional craftsmanship and finish\",\n  \"gallery\": [\n    { \"url\": \"/img/review1.jpg\", \"caption\": \"front view\" },\n    { \"url\": \"https://example.com/review2.jpg\" }\n  ]\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Valid review z 2 zdjeciami w gallery (tablica subdokumentow). Oczekiwane: 201 + zachowane gallery."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('gallery has 2 entries', () => pm.expect(body.gallery).to.have.lengthOf(2));",
+                  "pm.test('status defaults to PENDING', () => pm.expect(body.status).to.eql('PENDING'));",
+                  "pm.collectionVariables.set('pendingReviewId', body._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "instance method approve() + moderationHistory (POST /reviews/:id/moderate)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"admin-1\",\n  \"reason\": \"meets quality guidelines\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews/{{pendingReviewId}}/moderate", "host": ["{{catalog}}"], "path": ["reviews", "{{pendingReviewId}}", "moderate"] },
+            "description": "Uzywa instance method review.approve() ktora pcha wpis do moderationHistory (subdoc array) i odpala pre-save hook. Oczekiwane: 200, status=APPROVED, moderationHistory ma 1 wpis."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('status changed to APPROVED', () => pm.expect(body.status).to.eql('APPROVED'));",
+                  "pm.test('moderationHistory has 1 entry', () => pm.expect(body.moderationHistory).to.have.lengthOf(1));",
+                  "pm.test('moderationHistory entry has moderatorId and reason', () => {",
+                  "  pm.expect(body.moderationHistory[0].moderatorId).to.eql('admin-1');",
+                  "  pm.expect(body.moderationHistory[0].reason).to.eql('meets quality guidelines');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "instance method reject() appends second history entry",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"reject\",\n  \"moderatorId\": \"admin-2\",\n  \"reason\": \"spam detected\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews/{{pendingReviewId}}/moderate", "host": ["{{catalog}}"], "path": ["reviews", "{{pendingReviewId}}", "moderate"] },
+            "description": "Drugi krok moderacji - przeglad. moderationHistory ma teraz 2 wpisy (audit trail). Oczekiwane: 200, status=REJECTED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('status changed to REJECTED', () => pm.expect(body.status).to.eql('REJECTED'));",
+                  "pm.test('moderationHistory has 2 entries (audit trail kept)', () => pm.expect(body.moderationHistory).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "pre-save hook updates updatedAt",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"u-hook\",\n  \"rating\": 5,\n  \"title\": \"Nice\",\n  \"body\": \"loved the product overall\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Po save updatedAt powinno byc ustawione przez pre('save') hook. Oczekiwane: 201, updatedAt obecne."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('updatedAt set by pre-save hook', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.updatedAt).to.exist;",
+                  "  pm.expect(new Date(body.updatedAt).getTime()).to.be.greaterThan(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

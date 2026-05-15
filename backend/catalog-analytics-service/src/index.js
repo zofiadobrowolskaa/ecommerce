@@ -113,21 +113,49 @@ app.post('/cart-draft/:sessionId/remove', async (req, res) => {
 app.post('/reviews', async (req, res) => {
   try {
     const review = new Review(req.body);
-    // save triggers mongoose custom validators and pre-hooks
+    // save triggers mongoose custom validators and the pre-save hook
     await review.save();
     res.status(201).json(review);
   } catch (error) {
+    // mongoose validation errors surface here with structured details
     res.status(400).json({ error: error.message });
   }
 });
 
-// populate review with product details
+// fetch approved reviews for a product, with populated productDetail via virtual populate
 app.get('/reviews/:productId', async (req, res) => {
   try {
-    const reviews = await Review.find({ productId: req.params.productId, status: 'APPROVED' });
+    const productId = Number(req.params.productId);
+    // use the static method defined on the schema for the base query
+    // then populate the virtual to attach productDetail document inline
+    const reviews = await Review.findByProduct(productId).populate('productDetail');
     res.json(reviews);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// moderate a review: triggers instance method that mutates status and appends history
+app.post('/reviews/:id/moderate', async (req, res) => {
+  try {
+    const { decision, moderatorId, reason } = req.body;
+    if (!['approve', 'reject'].includes(decision)) {
+      return res.status(400).json({ error: 'decision must be approve or reject' });
+    }
+    if (!moderatorId) {
+      return res.status(400).json({ error: 'moderatorId is required' });
+    }
+
+    const review = await Review.findById(req.params.id);
+    if (!review) return res.status(404).json({ error: 'review not found' });
+
+    // call instance method (also runs the pre-save hook and validators)
+    if (decision === 'approve') await review.approve(moderatorId, reason);
+    else await review.reject(moderatorId, reason);
+
+    res.json(review);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
 });
 
@@ -172,7 +200,7 @@ app.get('/analytics/average-ratings', async (req, res) => {
   }
 });
 
-// dummy data setup for testing
+// dummy data setup for testing (bodies must satisfy the 3-word custom validator)
 app.post('/test/setup', async (req, res) => {
   try {
     // clear existing test data to prevent duplicate key errors
@@ -180,8 +208,8 @@ app.post('/test/setup', async (req, res) => {
     await Review.deleteMany({ productId: 1 });
 
     await ProductDetail.create({ productId: 1, longDescription: "Golden Necklace", specs: { material: "Gold" } });
-    await Review.create({ productId: 1, userId: "u1", rating: 5, status: "APPROVED", title: "Great", body: "Awesome" });
-    await Review.create({ productId: 1, userId: "u2", rating: 4, status: "APPROVED", title: "Nice", body: "Good" });
+    await Review.create({ productId: 1, userId: "u1", rating: 5, status: "APPROVED", title: "Great", body: "really nice product" });
+    await Review.create({ productId: 1, userId: "u2", rating: 4, status: "APPROVED", title: "Nice", body: "good quality piece" });
     res.send("test data created successfully");
   } catch (error) {
     res.status(500).send(error.message);
