@@ -224,12 +224,9 @@ app.post('/api/cart/:userId/sync', validate(cartSyncSchema), async (req, res) =>
   try {
     const { items } = req.body;
 
-    // update cart in inventory service (main persistence layer)
+    // update cart in inventory service (single source of truth for cart state)
     await axios.post(`${INVENTORY_SERVICE}/cart/${req.params.userId}/sync`, { items });
-    
-    // save cart draft in mongo for analytics (fire and forget, should not break main flow)
-    axios.post(`${CATALOG_SERVICE}/cart-draft/${req.params.userId}/add`, { items }).catch(() => {});
-    
+
     res.sendStatus(200);
   } catch (e) {
     // centralized error handling (logging, mapping, etc.)
@@ -248,16 +245,9 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
   let orderId = null;
 
   try {
-    // step 1: transaction in postgres (price snapshot, reduce stock, create order)
+    // transaction in postgres (price snapshot, reduce stock, create order)
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/checkout`, { userId, items });
     orderId = pgRes.data.orderId;
-
-    // step 2: close draft / emit event in mongo (telemetry / analytics)
-    await axios.post(`${CATALOG_SERVICE}/telemetry/event`, {
-      action: 'checkout_completed',
-      userId,
-      details: `order_${orderId}`
-    });
 
     res.status(201).json({ success: true, orderId });
 

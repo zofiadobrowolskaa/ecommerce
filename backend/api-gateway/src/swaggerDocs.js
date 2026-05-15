@@ -241,7 +241,7 @@ const swaggerDocument = {
           }
         },
         responses: {
-          200: { description: 'Cart synchronized in PG; draft fire-and-forget logged in Mongo' },
+          200: { description: 'Cart synchronized in PG (single source of truth)' },
           400: {
             description: 'Zod validation failed',
             content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
@@ -252,7 +252,7 @@ const swaggerDocument = {
     '/api/checkout': {
       post: {
         tags: ['Checkout'],
-        summary: 'Transactional checkout (variants SELECT FOR UPDATE + Prisma tx + Mongo telemetry)',
+        summary: 'Transactional checkout (variants SELECT FOR UPDATE + Prisma tx)',
         requestBody: {
           required: true,
           content: {
@@ -264,7 +264,7 @@ const swaggerDocument = {
         },
         responses: {
           201: {
-            description: 'Order created, stock decremented, telemetry event logged',
+            description: 'Order created, stock decremented atomically',
             content: { 'application/json': { example: { success: true, orderId: 17 } } }
           },
           409: {

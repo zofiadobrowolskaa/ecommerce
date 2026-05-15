@@ -746,61 +746,13 @@
       "name": "5. mongodb native driver",
       "item": [
         {
-          "name": "telemetry event - $push $inc $set (POST /telemetry/event)",
+          "name": "wishlist add - $push $inc $set (POST /wishlists/:userId/add)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"action\": \"product_viewed\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"ocean ring detail page visit\"\n}" },
-            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
-            "description": "Native driver, updateOne z 3 operatorami: $push (event do tablicy), $inc (eventCount), $set (lastAction). Upsert. Oczekiwane: 201."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const body = pm.response.json();",
-                  "pm.test('upsert result returned', () => pm.expect(body).to.have.any.keys('acknowledged', 'modifiedCount', 'upsertedId'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "telemetry event - second call increments counter",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"action\": \"checkout_started\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"clicked checkout button on cart page\"\n}" },
-            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
-            "description": "Drugie wywołanie z tym samym userId. $inc zwiększa eventCount, $push dorzuca event, $set zmienia lastAction. Oczekiwane: 201."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "$text full-text search (GET /telemetry/search?q=...)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{catalog}}/telemetry/search?q=checkout",
-              "host": ["{{catalog}}"],
-              "path": ["telemetry", "search"],
-              "query": [{ "key": "q", "value": "checkout" }]
-            },
-            "description": "Wykorzystuje indeks tekstowy created on event_log. Oczekiwane: 200, count>=1, znajduje dokument z 'checkout' w action/details."
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"note\": \"saved for anniversary gift\"\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "add"] },
+            "description": "Native driver updateOne z 3 operatorami w jednym write: $push (item -> items[]), $inc (itemCount), $set (lastModified). Upsert tworzy dokument przy 1. wywołaniu. Oczekiwane: 200."
           },
           "event": [
             {
@@ -809,19 +761,41 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('count >= 1', () => pm.expect(pm.response.json().count).to.be.at.least(1));"
+                  "const body = pm.response.json();",
+                  "pm.test('upsert result returned', () => pm.expect(body.result).to.have.any.keys('acknowledged', 'modifiedCount', 'upsertedId'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "$text search requires q (returns 400)",
+          "name": "wishlist add second item - $inc increments counter",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 2,\n  \"note\": \"alternative ring option\"\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "add"] },
+            "description": "Drugie wywołanie z tym samym userId. $inc zwiększa itemCount, $push dorzuca item, $set odświeża lastModified. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "wishlist read (GET /wishlists/:userId) — compound index { userId, lastModified }",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
-            "description": "Brak ?q -> walidacja zwraca 400 query_required."
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user"] },
+            "description": "Native driver findOne. Lookup userId trafia w prefiks compound indexu { userId: 1, lastModified: -1 }."
           },
           "event": [
             {
@@ -829,63 +803,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));",
-                  "pm.test('error is query_required', () => pm.expect(pm.response.json().error).to.eql('query_required'));"
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const w = pm.response.json();",
+                  "pm.test('itemCount >= 2', () => pm.expect(w.itemCount).to.be.at.least(2));",
+                  "pm.test('items array populated', () => pm.expect(w.items).to.be.an('array').that.has.length.at.least(2));",
+                  "pm.test('lastModified set', () => pm.expect(w).to.have.property('lastModified'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "cart draft add - $push $inc $set (POST /cart-draft/:sid/add)",
+          "name": "$pull removes item from wishlist (POST /wishlists/:userId/remove)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\",\n  \"variant\": \"diamond/size-7\",\n  \"price\": 189.99\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
-            "description": "Native driver upsert szkicu koszyka z 3 operatorami w jednym write. Oczekiwane: 200."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "cart draft add second item",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p002\",\n  \"variant\": \"baby-pink\",\n  \"price\": 149.99\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
-            "description": "Drugi item w tym samym sessionId. Oczekiwane: 200."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "$pull removes item from draft (POST /cart-draft/:sid/remove)",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "remove"] },
-            "description": "Operator $pull usuwa item z items[]. 4. operator zapisu (po $push/$inc/$set). Oczekiwane: 200 modified=1."
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/remove", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "remove"] },
+            "description": "Operator $pull usuwa item z items[]. 4. operator zapisu (po $push/$inc/$set). Oczekiwane: 200, modified>=1."
           },
           "event": [
             {
@@ -901,13 +836,13 @@
           ]
         },
         {
-          "name": "$pull on non-existing session returns 404",
+          "name": "$pull on non-existing wishlist returns 404",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/no-such-session/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "no-such-session", "remove"] },
-            "description": "Brak takiej sesji. Oczekiwane: 404 cart_draft_not_found."
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/no-such-user/remove", "host": ["{{catalog}}"], "path": ["wishlists", "no-such-user", "remove"] },
+            "description": "Brak takiego userId. Oczekiwane: 404 wishlist_not_found (jednolita koperta { error, code, details })."
           },
           "event": [
             {
@@ -915,7 +850,30 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error is wishlist_not_found', () => pm.expect(pm.response.json().error).to.eql('wishlist_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "missing productId returns 400 (input validation)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "add"] },
+            "description": "Brak productId w body. Oczekiwane: 400 productId_required (walidacja wejścia po stronie serwera)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is productId_required', () => pm.expect(pm.response.json().error).to.eql('productId_required'));"
                 ]
               }
             }
@@ -1630,12 +1588,13 @@
           ]
         },
         {
-          "name": "unified envelope: catalog 400 query_required (GET /telemetry/search)",
+          "name": "unified envelope: catalog 400 productId_required (POST /wishlists/:userId/add)",
           "request": {
-            "method": "GET",
-            "header": [],
-            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
-            "description": "Catalog tez. Brak ?q -> 400 z unified envelope."
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{catalog}}/wishlists/security-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "security-user", "add"] },
+            "description": "Catalog tez. Brak productId -> 400 z unified envelope."
           },
           "event": [
             {
@@ -1646,7 +1605,7 @@
                   "pm.test('status 400', () => pm.response.to.have.status(400));",
                   "const body = pm.response.json();",
                   "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
-                  "pm.test('error is query_required', () => pm.expect(body.error).to.eql('query_required'));",
+                  "pm.test('error is productId_required', () => pm.expect(body.error).to.eql('productId_required'));",
                   "pm.test('code is 400', () => pm.expect(body.code).to.eql(400));"
                 ]
               }
@@ -2625,6 +2584,52 @@
                   "const r = pm.response.json();",
                   "pm.test('status updated', () => pm.expect(r.status).to.eql('REJECTED'));",
                   "pm.test('history appended', () => pm.expect(r.moderationHistory).to.be.an('array').that.is.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "productdetails fields — specs is map, gallery is array (GET /product-details/1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/1", "host": ["{{catalog}}"], "path": ["product-details", "1"] },
+            "description": "Weryfikuje wymagany kształt dokumentu ProductDetail: productId (number), longDescription (string), specs (map / obiekt), gallery (array)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('productId is numeric', () => pm.expect(b.productId).to.be.a('number'));",
+                  "pm.test('longDescription is string', () => pm.expect(b.longDescription).to.be.a('string'));",
+                  "pm.test('specs is plain object (map)', () => pm.expect(b.specs).to.be.an('object'));",
+                  "pm.test('gallery is array', () => pm.expect(b.gallery).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation pipeline uses compound index { status, productId } (GET /analytics/average-ratings/explain)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/analytics/average-ratings/explain", "host": ["{{catalog}}"], "path": ["analytics", "average-ratings", "explain"] },
+            "description": "Wymaganie 16: średnia ocena per produkt liczona Aggregation Pipeline z $match w prefiksie indeksu. Explain potwierdza IXSCAN zamiast COLLSCAN."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('queryPlanner returned', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/queryPlanner|stages|winningPlan/));"
                 ]
               }
             }

@@ -18,64 +18,26 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'catalog-analytics-service' });
 });
 
-// telemetry event log endpoint (native driver with 3 operators)
-app.post('/telemetry/event', async (req, res) => {
+// WISHLISTS — native driver domain resource (requirement 5)
+// dedicated collection managed exclusively by the native MongoClient,
+// independent from the mongoose-managed productdetails / reviews collections.
+
+// add an item to a user's wishlist (native driver, 3 distinct operators + upsert)
+app.post('/wishlists/:userId/add', async (req, res) => {
   try {
     const db = getDb();
-    const { action, userId, details } = req.body;
-
-    // update document with 3 distinct operators
-    const result = await db.collection('event_log').updateOne(
-      { userId },
-      {
-        $push: { events: { action, details, timestamp: new Date() } }, // op 1: push to array
-        $inc: { eventCount: 1 },                                       // op 2: increment counter
-        $set: { lastAction: action }                                   // op 3: set field
-      },
-      { upsert: true } // create if doesn't exist
-    );
-    res.status(201).json(result);
-  } catch (error) {
-    sendError(res, 500, 'internal_server_error', error.message);
-  }
-});
-
-// full-text search across telemetry events using the text index on details + action
-app.get('/telemetry/search', async (req, res) => {
-  try {
-    const db = getDb();
-    const { q } = req.query;
-    if (!q) {
-      return sendError(res, 400, 'query_required', 'pass ?q=keyword');
+    const { userId } = req.params;
+    const { productId, note } = req.body;
+    if (!productId) {
+      return sendError(res, 400, 'productId_required', 'body must include productId');
     }
 
-    // $text query uses the text index created on event_log
-    // textScore lets us sort by relevance
-    const results = await db.collection('event_log')
-      .find({ $text: { $search: q } }, { projection: { score: { $meta: 'textScore' } } })
-      .sort({ score: { $meta: 'textScore' } })
-      .limit(20)
-      .toArray();
-
-    res.json({ count: results.length, results });
-  } catch (error) {
-    sendError(res, 500, 'internal_server_error', error.message);
-  }
-});
-
-// cart draft operations (native driver, 3 operators in one call)
-app.post('/cart-draft/:sessionId/add', async (req, res) => {
-  try {
-    const db = getDb();
-    const { sessionId } = req.params;
-    const { productId, variant, price } = req.body;
-
-    const result = await db.collection('cart_draft').updateOne(
-      { sessionId },
+    const result = await db.collection('wishlists').updateOne(
+      { userId },
       {
-        $set: { lastModified: new Date() },
-        $push: { items: { productId, variant, price, addedAt: new Date() } },
-        $inc: { totalItems: 1 }
+        $push: { items: { productId, note: note ?? null, addedAt: new Date() } }, // op 1: append to items array
+        $inc: { itemCount: 1 },                                                    // op 2: increment counter
+        $set: { lastModified: new Date() }                                          // op 3: refresh timestamp
       },
       { upsert: true }
     );
@@ -85,31 +47,45 @@ app.post('/cart-draft/:sessionId/add', async (req, res) => {
   }
 });
 
-// remove a specific item from a cart draft using $pull (4th distinct operator)
-app.post('/cart-draft/:sessionId/remove', async (req, res) => {
+// remove a specific item from a user's wishlist using $pull (4th distinct operator)
+app.post('/wishlists/:userId/remove', async (req, res) => {
   try {
     const db = getDb();
-    const { sessionId } = req.params;
+    const { userId } = req.params;
     const { productId } = req.body;
     if (!productId) {
       return sendError(res, 400, 'productId_required', 'body must include productId');
     }
 
-    // $pull removes all matching items from the items array
-    // $inc decrements totalItems atomically in the same write
-    const result = await db.collection('cart_draft').updateOne(
-      { sessionId },
+    // $pull removes the matching item; $inc decrements counter; $set updates timestamp atomically
+    const result = await db.collection('wishlists').updateOne(
+      { userId },
       {
         $pull: { items: { productId } },
-        $set: { lastModified: new Date() },
-        $inc: { totalItems: -1 }
+        $inc: { itemCount: -1 },
+        $set: { lastModified: new Date() }
       }
     );
 
     if (result.matchedCount === 0) {
-      return sendError(res, 404, 'cart_draft_not_found', `no cart draft for session ${sessionId}`);
+      return sendError(res, 404, 'wishlist_not_found', `no wishlist for user ${userId}`);
     }
     res.json({ success: true, modified: result.modifiedCount });
+  } catch (error) {
+    sendError(res, 500, 'internal_server_error', error.message);
+  }
+});
+
+// fetch a user's wishlist (native driver findOne)
+app.get('/wishlists/:userId', async (req, res) => {
+  try {
+    const db = getDb();
+    const { userId } = req.params;
+    const doc = await db.collection('wishlists').findOne({ userId });
+    if (!doc) {
+      return sendError(res, 404, 'wishlist_not_found', `no wishlist for user ${userId}`);
+    }
+    res.json(doc);
   } catch (error) {
     sendError(res, 500, 'internal_server_error', error.message);
   }
@@ -129,6 +105,8 @@ app.post('/reviews', async (req, res) => {
 });
 
 // fetch approved reviews for a product, with populated productDetail via virtual populate
+// "latest reviews" feed - newest-first ordering is served by the
+// compound index { productId: 1, status: 1, createdAt: -1 } declared on the Review schema
 app.get('/reviews/:productId', async (req, res) => {
   try {
     const productId = Number(req.params.productId);
@@ -165,7 +143,7 @@ app.post('/reviews/:id/moderate', async (req, res) => {
   }
 });
 
-// analytical endpoint using aggregation pipeline executed in the database engine
+// requirement 16: average-rating-per-product aggregation pipeline (run in mongo engine)
 // optional ?limit=N query param controls how many top products are returned
 app.get('/analytics/average-ratings', async (req, res) => {
   try {

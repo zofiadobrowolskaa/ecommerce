@@ -14,7 +14,7 @@ The backend system is designed as a kiosk ordering point. It implements the **Sa
 |---|---|---|---|
 | `api-gateway` | 3000 | Express + Zod + axios + swagger-ui-express | Public entry point. Routing, input validation, distributed saga orchestration, response aggregation, OpenAPI docs, unified error envelope. |
 | `pg-service` (Inventory & Order) | 3001 | Express + pg + Knex + Sequelize + Prisma | ACID catalog: **`products`**, **`categories`**, relational **`variants` (SKU, price, stock)**, **`inventory_movements`** audit, carts + **`Order`/`OrderLine` price+SKU snapshots**, checkout **`FOR UPDATE` on `variants`**. |
-| `mongo-service` (Catalog & Analytics) | 3002 | Express + mongodb native + Mongoose | All flexible/document data: extended product details with variants (`ProductDetail`), reviews with moderation history (`Review`), telemetry event log, cart drafts, analytics aggregations. |
+| `mongo-service` (Catalog & Analytics) | 3002 | Express + mongodb native + Mongoose | All flexible/document data: extended product details with variants (`ProductDetail`), reviews with moderation history (`Review`), user wishlists, analytics aggregations. |
 | `seeder` (one-shot) | n/a | Reuses api-gateway image | Posts 18 base products through the gateway once both services are healthy. Exits after completion so `docker compose up` requires zero manual steps. |
 | `frontend` | 5173 | React 18 + Vite | Customer storefront + admin panel. Out of scope for the database course grading. |
 
@@ -41,7 +41,7 @@ flowchart LR
 
         subgraph datastores ["Datastores"]
             PG[("PostgreSQL :5432<br/>products, categories,<br/>variants, inventory_movements,<br/>Carts, CartLines,<br/>Order, OrderLine")]
-            MG[("MongoDB :27017<br/>catalog docs: productdetails, reviews<br/>native ops: event_log, cart_draft")]
+            MG[("MongoDB :27017<br/>catalog docs: productdetails, reviews<br/>native ops: wishlists")]
         end
     end
 
@@ -89,14 +89,13 @@ sequenceDiagram
     end
 ```
 
-## 🔁 Data Flow — Hybrid Checkout Saga (PG transactional + Mongo telemetry)
+## 🔁 Data Flow — Transactional Checkout (PG Prisma transaction)
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant G as api-gateway
     participant PG as pg-service (Prisma)
-    participant MG as mongo-service
 
     C->>G: POST /api/checkout { userId, items }
     G->>G: Zod validation
@@ -105,13 +104,11 @@ sequenceDiagram
     PG->>PG: SELECT variants ... FOR UPDATE (row lock)
     alt Stock < requested
         PG-->>G: 409 conflict_oversell
-        G-->>C: 409 unified envelope (no telemetry recorded)
+        G-->>C: 409 unified envelope
     else Stock OK
         PG->>PG: UPDATE variants.stock; INSERT inventory_movements; INSERT Order + OrderLines
         PG->>PG: COMMIT (rollup products.stock)
         PG-->>G: 201 { orderId }
-        G->>MG: POST /telemetry/event ({ action: "checkout_completed" })<br/>(fire and forget for UX analytics)
-        MG-->>G: 201
         G-->>C: 201 { success: true, orderId }
     end
 ```
@@ -203,11 +200,11 @@ The backend uses **seven** distinct database interaction paradigms in clearly se
 
 **MongoDB side (mongo-service):**
 
-5. **MongoDB native driver** – Singleton `MongoClient`, graceful shutdown on `SIGINT` / `SIGTERM`, telemetry log + cart drafts using 4 distinct operators (`$push`, `$inc`, `$set`, `$pull`). Compound and text indexes.
+5. **MongoDB native driver** – Singleton `MongoClient`, graceful shutdown on `SIGINT` / `SIGTERM`, user `wishlists` managed exclusively by the native driver using 4 distinct operators (`$push`, `$inc`, `$set`, `$pull`). Compound index `{ userId, lastModified }` + text index on wishlist notes.
 6. **Mongoose** – `ProductDetail` and `Review` schemas with custom validators (rating must be integer, body must have ≥ 3 words, variants must have unique colors), nested subdocuments (`variants[]`, `gallery[]`, `moderationHistory[]`), pre-save hook, virtual populate, statics (`findByProduct`) and instance methods (`approve()`, `reject()`).
 7. **Aggregation Pipeline** – 7-stage analytics report (`$match` → `$group` → `$lookup` → `$unwind` → `$sort` → `$limit` → `$project`). First `$match` is backed by a compound index `{ status, productId }` so the planner uses `IXSCAN` instead of `COLLSCAN`.
 
-**MongoDB document model (graded scope):** the examined catalog lives in **`productdetails`** (`ProductDetail`: `productId`, `longDescription`, `specs` as a `Map`, `gallery[]`, …) and **`reviews`** (`Review`: `productId`, `userId`, `rating`, `title`, `body`, moderation `status`, nested `moderationHistory[]`). Supporting indexes include **`{ status: 1, productId: 1 }`** for the average-rating aggregation prefix match and **`{ productId: 1, status: 1, createdAt: -1 }`** for newest-first “latest reviews” reads. **`event_log`** and **`cart_draft`** are **additional** collections exercised through the **native driver** (telemetry / drafts); they demonstrate `$push`/`$inc`/indexes for other checklist items — **they do not replace** the graded product-detail + review document design above.
+**MongoDB document model (graded scope):** the examined catalog lives in **`productdetails`** (`ProductDetail`: `productId`, `longDescription`, `specs` as a `Map`, `gallery[]`, …) and **`reviews`** (`Review`: `productId`, `userId`, `rating`, `title`, `body`, moderation `status`, nested `moderationHistory[]`). Supporting indexes include **`{ status: 1, productId: 1 }`** for the average-rating aggregation prefix match and **`{ productId: 1, status: 1, createdAt: -1 }`** for newest-first “latest reviews” reads. **`wishlists`** is an **additional** collection exercised through the **native driver** (requirement 5 demo); it demonstrates `$push`/`$inc`/`$set`/`$pull` and the compound + text indexes — **it does not replace** the graded product-detail + review document design above.
 
 ## 🛡️ Security & Threat Mitigation
 
