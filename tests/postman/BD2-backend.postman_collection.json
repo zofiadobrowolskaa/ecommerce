@@ -1692,9 +1692,11 @@
                   "  '/api/products',",
                   "  '/api/products/{id}',",
                   "  '/api/cart/{userId}',",
+                  "  '/api/cart/{userId}/add',",
                   "  '/api/cart/{userId}/sync',",
                   "  '/api/checkout',",
-                  "  '/api/orders/{orderId}/cancel'",
+                  "  '/api/orders/{orderId}/cancel',",
+                  "  '/api/users/{userId}/orders'",
                   "];",
                   "expected.forEach(p => {",
                   "  pm.test(`path ${p} is documented`, () => pm.expect(spec.paths).to.have.property(p));",
@@ -2419,6 +2421,245 @@
                   "const rows = pm.response.json();",
                   "const hit = rows.find(r => r.reason === 'order_cancel_restore' && r.order_id === oid);",
                   "pm.test('compensating movement recorded', () => pm.expect(hit).to.exist);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "17. api katalog/koszyk/checkout",
+      "item": [
+        {
+          "name": "products list — dynamic filter category+price range+availability (GET /api/products)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=1&minPrice=100&maxPrice=500&inStock=true",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [
+                { "key": "category", "value": "1" },
+                { "key": "minPrice", "value": "100" },
+                { "key": "maxPrice", "value": "500" },
+                { "key": "inStock", "value": "true" }
+              ]
+            },
+            "description": "Wymaganie 17: lista produktów z dynamicznym filtrem (kategoria, zakres ceny, dostępność). Knex builder bezpiecznie składa WHERE z parametrami."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json();",
+                  "pm.test('array response', () => pm.expect(items).to.be.an('array'));",
+                  "items.forEach(p => {",
+                  "  if (p.price !== undefined) {",
+                  "    pm.expect(Number(p.price)).to.be.at.least(100);",
+                  "    pm.expect(Number(p.price)).to.be.at.most(500);",
+                  "  }",
+                  "  if (p.category_id !== undefined) {",
+                  "    pm.expect(Number(p.category_id)).to.eql(1);",
+                  "  }",
+                  "  if (p.stock !== undefined) {",
+                  "    pm.expect(Number(p.stock)).to.be.greaterThan(0);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "products list — invalid minPrice returns 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?minPrice=abc",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "minPrice", "value": "abc" }]
+            },
+            "description": "Walidacja filtra — niełapana wartość trafia na 400 invalid_filter zamiast 500 z błędu castu w PG."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart add with stock validation — happy path (POST /api/cart/:userId/add)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"variantSku\": \"p001__v001a\",\n  \"quantity\": 1,\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/req17-user/add", "host": ["{{gateway}}"], "path": ["api", "cart", "req17-user", "add"] },
+            "description": "Dodanie pozycji do serwerowego koszyka z walidacją stanu magazynowego variantu. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart add — insufficient_stock returns 409",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"variantSku\": \"p001__v001a\",\n  \"quantity\": 999999,\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/req17-user/add", "host": ["{{gateway}}"], "path": ["api", "cart", "req17-user", "add"] },
+            "description": "Próba dodania większej ilości niż dostępny stock → 409 insufficient_stock (walidacja stanu, którą wymaga wymaganie 17)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout — oversell lock returns 409 (POST /api/checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"req17-user\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 999999, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Wymaganie 17: blokada oversell. Variant_FOR_UPDATE + porównanie z requested qty → 409 conflict_oversell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('envelope contains conflict_oversell', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/conflict_oversell/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout — zod 400 on negative quantity",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"req17-user\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": -3, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Walidacja na warstwie gateway — ujemna ilość daje 400 zanim cokolwiek trafi do bazy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout — happy path persists userId (POST /api/checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{req17_user}}\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 1, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Tworzy zamówienie zapisując userId — używane następnie przez historię zamówień użytkownika."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('req17_user', 'req17-user-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('orderId returned', () => pm.expect(pm.response.json().orderId).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "order history — GET /api/users/:userId/orders returns only that user's orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/users/{{req17_user}}/orders", "host": ["{{gateway}}"], "path": ["api", "users", "{{req17_user}}", "orders"] },
+            "description": "Wymaganie 17: historia zamówień użytkownika. Zapytanie filtruje po Order.userId i sortuje malejąco po createdAt (indeks złożony)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const orders = pm.response.json();",
+                  "pm.test('array response', () => pm.expect(orders).to.be.an('array'));",
+                  "pm.test('at least 1 order', () => pm.expect(orders.length).to.be.at.least(1));",
+                  "orders.forEach(o => pm.expect(o.userId).to.eql(pm.collectionVariables.get('req17_user')));",
+                  "for (let i = 1; i < orders.length; i++) {",
+                  "  pm.expect(new Date(orders[i - 1].createdAt).getTime()).to.be.at.least(new Date(orders[i].createdAt).getTime());",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "order history — unknown user returns empty list (not 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/users/no-such-user-xyz/orders", "host": ["{{gateway}}"], "path": ["api", "users", "no-such-user-xyz", "orders"] },
+            "description": "Brak zamówień ≠ błąd — zwracamy pustą listę dla nieznanego userId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('empty array', () => pm.expect(pm.response.json()).to.be.an('array').that.is.empty);"
                 ]
               }
             }

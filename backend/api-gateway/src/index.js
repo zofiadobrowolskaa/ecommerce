@@ -2,7 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocument = require('./swaggerDocs');
-const { validate, productSchema, cartSyncSchema, checkoutSchema } = require('./validators');
+const { validate, productSchema, cartSyncSchema, cartAddSchema, checkoutSchema } = require('./validators');
 
 const app = express();
 
@@ -218,6 +218,17 @@ app.get('/api/cart/:userId', async (req, res) => {
   }
 });
 
+// add a single item to the server-side cart with stock validation
+// downstream service returns 409 conflict_insufficient_stock when stock is too low
+app.post('/api/cart/:userId/add', validate(cartAddSchema), async (req, res) => {
+  try {
+    await axios.post(`${INVENTORY_SERVICE}/cart/${req.params.userId}/add`, req.body);
+    res.sendStatus(201);
+  } catch (e) {
+    handleError(res, e, 'cart_add_failed');
+  }
+});
+
 // sync entire cart state from frontend to backend
 // applied validation
 app.post('/api/cart/:userId/sync', validate(cartSyncSchema), async (req, res) => {
@@ -255,6 +266,17 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
     // oversell (race condition on stock) will typically return 409 from inventory service
     // note: no compensation here -> inventory service owns transaction consistency
     handleError(res, error, 'checkout_failed');
+  }
+});
+
+// per-user order history (requirement 17: historia zamówień użytkownika)
+// proxies the inventory service which serves the query out of the compound index
+app.get('/api/users/:userId/orders', async (req, res) => {
+  try {
+    const r = await axios.get(`${INVENTORY_SERVICE}/orders/user/${req.params.userId}`);
+    res.json(r.data);
+  } catch (e) {
+    handleError(res, e, 'order_history_failed');
   }
 });
 

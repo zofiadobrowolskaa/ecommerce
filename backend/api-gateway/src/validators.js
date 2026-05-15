@@ -45,6 +45,14 @@ const checkoutSchema = z.object({
   items: z.array(checkoutLineSchema).min(1, 'cart cannot be empty')
 });
 
+// schema for the single-item cart-add endpoint (add to cart with stock validation)
+const cartAddSchema = z.object({
+  productId: z.union([z.string(), z.number()]),
+  variantSku: z.string().min(1).optional(),
+  quantity: z.number().int().positive('quantity must be positive'),
+  price: z.number().nonnegative('price cannot be negative').optional()
+});
+
 // generic validation middleware
 const validate = (schema) => (req, res, next) => {
   try {
@@ -56,4 +64,4 @@ const validate = (schema) => (req, res, next) => {
   }
 };
 
-module.exports = { productSchema, cartSyncSchema, checkoutSchema, validate };
+module.exports = { productSchema, cartSyncSchema, cartAddSchema, checkoutSchema, validate };

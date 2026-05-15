@@ -46,27 +46,37 @@ app.get('/products/:productId/variants', async (req, res, next) => {
   }
 });
 
-// dynamic filtering endpoint
+// dynamic filtering endpoint — requirement 17: category + price range + availability
+// every filter is optional; combinations are composed into a single parameterized query
 app.get('/products', async (req, res, next) => {
   try {
-    const { category, maxPrice } = req.query;
+    const { category, minPrice, maxPrice, inStock } = req.query;
 
     // coerce filters to numbers up-front so malformed values cannot reach SQL
     const categoryId = category !== undefined ? Number(category) : undefined;
+    const minPriceNum = minPrice !== undefined ? Number(minPrice) : undefined;
     const maxPriceNum = maxPrice !== undefined ? Number(maxPrice) : undefined;
 
     // reject non-numeric filters as 400 instead of crashing on a Postgres cast error
     if (category !== undefined && !Number.isFinite(categoryId)) {
       return sendError(res, 400, 'invalid_filter', 'category must be numeric');
     }
+    if (minPrice !== undefined && !Number.isFinite(minPriceNum)) {
+      return sendError(res, 400, 'invalid_filter', 'minPrice must be numeric');
+    }
     if (maxPrice !== undefined && !Number.isFinite(maxPriceNum)) {
       return sendError(res, 400, 'invalid_filter', 'maxPrice must be numeric');
     }
 
+    // availability filter: "true" / "1" => only products with stock > 0
+    const onlyInStock = inStock === 'true' || inStock === '1';
+
     // dynamic where builder (no string concatenation, all values bound as parameters)
     const query = knex('products').where(builder => {
       if (categoryId !== undefined) builder.where('category_id', categoryId);
+      if (minPriceNum !== undefined) builder.where('price', '>=', minPriceNum);
       if (maxPriceNum !== undefined) builder.where('price', '<=', maxPriceNum);
+      if (onlyInStock) builder.where('stock', '>', 0);
     });
     const products = await query;
     res.json(products);
@@ -226,6 +236,68 @@ app.get('/cart/:userId', async (req, res) => {
   }
 });
 
+// add a single item to the user's cart — requirement 17: cart add with stock validation
+// rejects requests where the chosen variant does not have enough stock right now
+app.post('/cart/:userId/add', async (req, res) => {
+  const { productId, variantSku, quantity, price } = req.body || {};
+
+  // input shape check before touching the database
+  if (!productId || !quantity || quantity < 1) {
+    return sendError(res, 400, 'invalid_payload', 'productId and quantity >= 1 are required');
+  }
+
+  try {
+    // stock check at variant grain when variantSku is provided, otherwise at product grain
+    if (variantSku) {
+      const row = await knex('variants').where({ sku: variantSku }).first();
+      if (!row) return sendError(res, 404, 'variant_not_found', `unknown sku ${variantSku}`);
+      if (Number(row.stock) < Number(quantity)) {
+        return sendError(res, 409, 'insufficient_stock', {
+          sku: variantSku,
+          available: Number(row.stock),
+          requested: Number(quantity)
+        });
+      }
+    } else {
+      const product = await knex('products').where({ id: Number(productId) }).first();
+      if (!product) return sendError(res, 404, 'product_not_found', `unknown productId ${productId}`);
+      if (Number(product.stock) < Number(quantity)) {
+        return sendError(res, 409, 'insufficient_stock', {
+          productId: Number(productId),
+          available: Number(product.stock),
+          requested: Number(quantity)
+        });
+      }
+    }
+
+    // append the validated line to the open cart inside a managed sequelize transaction
+    await sequelize.transaction(async (t) => {
+      let cart = await Cart.findOne({ where: { userId: req.params.userId, status: 'OPEN' }, transaction: t });
+      if (!cart) cart = await Cart.create({ userId: req.params.userId }, { transaction: t });
+
+      // CartLine.create runs model-level validators (quantity >= 1, price >= 0, ...)
+      await CartLine.create({
+        CartId: cart.id,
+        productId: Number(productId),
+        variantSku: variantSku ?? null,
+        quantity: Number(quantity),
+        priceAtEntry: Number(price) || 0
+      }, { transaction: t });
+
+      // recompute rollup so list endpoints see the new total without an extra query
+      cart.totalPrice = Number(cart.totalPrice) + (Number(price) || 0) * Number(quantity);
+      await cart.save({ transaction: t });
+    });
+
+    res.sendStatus(201);
+  } catch (e) {
+    if (e.name === 'SequelizeValidationError' || e.name === 'SequelizeUniqueConstraintError') {
+      return sendError(res, 400, 'validation_error', e.errors.map(err => ({ field: err.path, message: err.message })));
+    }
+    sendError(res, 500, 'internal_server_error', e.message);
+  }
+});
+
 // sync cart items to server state (managed transaction with model validation)
 app.post('/cart/:userId/sync', async (req, res) => {
   const { items } = req.body;
@@ -320,6 +392,8 @@ app.post('/checkout', async (req, res) => {
 
       const newOrder = await tx.order.create({
         data: {
+          // persist userId so requirement 17's order-history endpoint can filter by owner
+          userId: userId ?? null,
           totalAmount,
           status: 'PAID',
           lines: {
@@ -389,6 +463,25 @@ app.get('/orders', async (req, res, next) => {
   try {
     // findMany with include exercises eager loading via prisma's typed api
     const orders = await prisma.order.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { lines: true }
+    });
+    res.json(orders);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// per-user order history — requirement 17 "historia zamówień użytkownika"
+// uses the compound index { userId, createdAt } for index-only scan in chronological order
+app.get('/orders/user/:userId', async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) {
+      return sendError(res, 400, 'userId_required', 'userId path param is required');
+    }
+    const orders = await prisma.order.findMany({
+      where: { userId },
       orderBy: { createdAt: 'desc' },
       include: { lines: true }
     });

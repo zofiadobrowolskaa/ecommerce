@@ -60,7 +60,9 @@ const swaggerDocument = {
           'Filters are bound by Knex query builder - safe against SQL injection.',
         parameters: [
           { name: 'category', in: 'query', schema: { type: 'integer' }, example: 1, description: 'Filter by category id' },
-          { name: 'maxPrice', in: 'query', schema: { type: 'number' }, example: 500, description: 'Maximum price' },
+          { name: 'minPrice', in: 'query', schema: { type: 'number' }, example: 100, description: 'Lower bound of price range' },
+          { name: 'maxPrice', in: 'query', schema: { type: 'number' }, example: 500, description: 'Upper bound of price range' },
+          { name: 'inStock', in: 'query', schema: { type: 'boolean' }, example: true, description: 'Availability — return only products with stock > 0 when set to true' },
           { name: 'page', in: 'query', schema: { type: 'integer' }, example: 1 },
           { name: 'limit', in: 'query', schema: { type: 'integer' }, example: 10 }
         ],
@@ -220,6 +222,56 @@ const swaggerDocument = {
                   totalPrice: 500,
                   lines: [{ id: 11, productId: 1, quantity: 2, priceAtEntry: 250 }]
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/api/cart/{userId}/add': {
+      post: {
+        tags: ['Cart'],
+        summary: 'Add a single item to the server cart with stock validation (req 17)',
+        parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' }, example: 'user-123' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CartAddRequest' },
+              example: { productId: 1, variantSku: 'p001__v001a', quantity: 2, price: 250 }
+            }
+          }
+        },
+        responses: {
+          201: { description: 'Item added to cart' },
+          400: {
+            description: 'Zod validation failed',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          404: {
+            description: 'Product or variant not found',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          409: {
+            description: 'Insufficient stock — available/requested returned in details',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          }
+        }
+      }
+    },
+    '/api/users/{userId}/orders': {
+      get: {
+        tags: ['Orders'],
+        summary: 'List orders for a single user, newest-first (req 17 order history)',
+        parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' }, example: 'user-123' }],
+        responses: {
+          200: {
+            description: 'User orders sorted by createdAt desc (compound index { userId, createdAt })',
+            content: {
+              'application/json': {
+                example: [
+                  { id: 17, userId: 'user-123', status: 'PAID', totalAmount: '500.00', createdAt: '2026-05-15T11:32:00Z', lines: [] }
+                ]
               }
             }
           }
@@ -397,6 +449,16 @@ const swaggerDocument = {
               }
             }
           }
+        }
+      },
+      CartAddRequest: {
+        type: 'object',
+        required: ['productId', 'quantity'],
+        properties: {
+          productId: { type: 'integer', example: 1 },
+          variantSku: { type: 'string', description: 'Optional saleable SKU; if present, stock is checked at variant grain' },
+          quantity: { type: 'integer', minimum: 1, example: 2 },
+          price: { type: 'number', minimum: 0, example: 250 }
         }
       },
       CheckoutRequest: {
