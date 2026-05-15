@@ -1,0 +1,927 @@
+{
+  "info": {
+    "name": "BD2 Backend Tests",
+    "description": "tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gateway", "value": "http://localhost:3000" },
+    { "key": "inventory", "value": "http://localhost:3001" },
+    { "key": "catalog", "value": "http://localhost:3002" }
+  ],
+  "item": [
+    {
+      "name": "1. sterownik pg",
+      "item": [
+        {
+          "name": "parameterized update success (PATCH /inventory/:sku)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 1\n}" },
+            "url": { "raw": "{{inventory}}/inventory/p001", "host": ["{{inventory}}"], "path": ["inventory", "p001"] },
+            "description": "Pula singleton + zapytanie parametryzowane $1,$2. Oczekiwane: 204 No Content. Stock produktu p001 spada o 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unique violation 23505 -> 409 (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Duplicate Test\",\n  \"sku\": \"DUPLICATE_TEST_001\",\n  \"price\": 100,\n  \"category_id\": 1,\n  \"long_description\": \"test\"\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Wyślij DWA RAZY. 1. raz: 201 Created. 2. raz: 409 Conflict z kodem 23505 w details (mapowanie błędu unique violation)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// expect 201 on first call, 409 on subsequent calls",
+                  "pm.test('status 201 or 409', () => pm.expect([201, 409]).to.include(pm.response.code));",
+                  "if (pm.response.code === 409) {",
+                  "  pm.test('details contain pg code 23505', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(JSON.stringify(body)).to.match(/23505/);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "fk violation 23503 -> 400 (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"FK Test\",\n  \"sku\": \"FK_TEST_001\",\n  \"price\": 50,\n  \"category_id\": 9999,\n  \"long_description\": \"test fk\"\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "category_id=9999 nie istnieje -> Postgres rzuca 23503, middleware mapuje na 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('details contain pg code 23503', () => {",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.match(/23503/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "param query prevents sql injection (PATCH /inventory/:sku)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 1\n}" },
+            "url": {
+              "raw": "{{inventory}}/inventory/p001'; DROP TABLE products;--",
+              "host": ["{{inventory}}"],
+              "path": ["inventory", "p001'; DROP TABLE products;--"]
+            },
+            "description": "Niebezpieczny SKU jest traktowany jako wartość $2, nie jako część SQL. Oczekiwane: 204, tabela products nadal istnieje."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. knex.js",
+      "item": [
+        {
+          "name": "dynamic WHERE no filters (GET /api/products)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Brak filtrów -> zwraca wszystkie produkty (200, tablica)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE filter category (GET /api/products?category=1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=1",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "category", "value": "1" }]
+            },
+            "description": "Filtr po category_id=1 (Earrings). Wszystkie zwrócone produkty mają category_id == 1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('all items have category_id 1', () => {",
+                  "  const items = pm.response.json();",
+                  "  items.forEach(p => pm.expect(p.category_id).to.eql(1));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE filter maxPrice (GET /api/products?maxPrice=200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?maxPrice=200",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "maxPrice", "value": "200" }]
+            },
+            "description": "Filtr po cenie <=200. Każdy zwrócony produkt ma price <= 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('all items price <= 200', () => {",
+                  "  pm.response.json().forEach(p => pm.expect(Number(p.price)).to.be.at.most(200));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE combined filters (GET /api/products?category=2&maxPrice=500)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=2&maxPrice=500",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [
+                { "key": "category", "value": "2" },
+                { "key": "maxPrice", "value": "500" }
+              ]
+            },
+            "description": "Oba filtry razem. Wszystkie zwrócone Rings z ceną <=500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('all items category=2 and price<=500', () => {",
+                  "  pm.response.json().forEach(p => {",
+                  "    pm.expect(p.category_id).to.eql(2);",
+                  "    pm.expect(Number(p.price)).to.be.at.most(500);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dynamic WHERE sql injection safe (GET /api/products)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=1' OR '1'='1",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "category", "value": "1' OR '1'='1" }]
+            },
+            "description": "Wstrzyknięty payload. Oczekiwane: 400 invalid_filter (walidacja na liczbę). Serwis nie pada."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('response mentions invalid_filter (wrapped by gateway in details)', () => {",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.match(/invalid_filter/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. sequelize v6",
+      "item": [
+        {
+          "name": "setup - sync cart (POST /cart/:userId/sync)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 2, \"price\": 100 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-user-1/sync", "host": ["{{inventory}}"], "path": ["cart", "test-user-1", "sync"] },
+            "description": "Setup do eager loading: tworzy koszyk z 1 linią. Oczekiwane: 200 OK."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "eager loading: cart with lines (GET /cart/:userId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/cart/test-user-1", "host": ["{{inventory}}"], "path": ["cart", "test-user-1"] },
+            "description": "Pobiera koszyk + CartLines jednym zapytaniem (include). Oczekiwane: 200 + pole CartLines."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('eager loaded CartLines field exists', () => pm.expect(pm.response.json()).to.have.property('CartLines'));",
+                  "pm.test('CartLines is array', () => pm.expect(pm.response.json().CartLines).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "validation CartLine: quantity must be >= 1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 0, \"price\": 100 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-user-1/sync", "host": ["{{inventory}}"], "path": ["cart", "test-user-1", "sync"] },
+            "description": "quantity=0 narusza validator min:1. Oczekiwane: 400 validation_error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "validation CartLine: priceAtEntry non-negative",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": -50 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-user-1/sync", "host": ["{{inventory}}"], "path": ["cart", "test-user-1", "sync"] },
+            "description": "Cena ujemna narusza validator min:0. Oczekiwane: 400 validation_error."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('details mention priceAtEntry', () => {",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.match(/priceAtEntry/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "validation Cart: userId not empty",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": []\n}" },
+            "url": { "raw": "{{inventory}}/cart/%20/sync", "host": ["{{inventory}}"], "path": ["cart", "%20", "sync"] },
+            "description": "userId = ' ' (spacja). Validator notEmpty rzuca błąd. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup - rollback transaction baseline",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": 100 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-rollback/sync", "host": ["{{inventory}}"], "path": ["cart", "test-rollback", "sync"] },
+            "description": "Stan startowy: 1 valid line. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "managed transaction rolls back on validation error",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 2, \"quantity\": 5, \"price\": 200 },\n    { \"productId\": 3, \"quantity\": -1, \"price\": 50 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/test-rollback/sync", "host": ["{{inventory}}"], "path": ["cart", "test-rollback", "sync"] },
+            "description": "Druga linia ma quantity=-1. Transakcja rzuca i się wycofuje. Oczekiwane: 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "rollback verification - cart still has baseline (GET /cart/test-rollback)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/cart/test-rollback", "host": ["{{inventory}}"], "path": ["cart", "test-rollback"] },
+            "description": "Po nieudanym sync koszyk ma stare linie. Oczekiwane: 1 linia z setupu (quantity:1, price:100)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('CartLines length is 1 (transaction rolled back)', () => {",
+                  "  pm.expect(pm.response.json().CartLines.length).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. prisma",
+      "item": [
+        {
+          "name": "migration history (GET /products/1 sanity check)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/1", "host": ["{{inventory}}"], "path": ["products", "1"] },
+            "description": "Sprawdzenie że produkt istnieje. Oczekiwane: 200 z polem stock>0."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has stock > 0', () => pm.expect(pm.response.json().stock).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: CREATE order via checkout (POST /checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-crud-1\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": 189.99 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Wywołuje prisma.order.create + tx.$queryRaw FOR UPDATE. Oczekiwane: 201 + orderId. Zapisuje orderId w env."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns orderId', () => pm.expect(body.orderId).to.be.a('number'));",
+                  "pm.collectionVariables.set('lastOrderId', body.orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: READ single (GET /orders/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "prisma.order.findUnique + include lines. Oczekiwane: 200 + lines tablica."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has lines array', () => pm.expect(pm.response.json().lines).to.be.an('array'));",
+                  "pm.test('status is PAID', () => pm.expect(pm.response.json().status).to.eql('PAID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: READ list (GET /orders)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders", "host": ["{{inventory}}"], "path": ["orders"] },
+            "description": "prisma.order.findMany. Oczekiwane: 200 + tablica zamówień, każde z lines."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: UPDATE via cancel (POST /orders/:id/cancel)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}/cancel", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}", "cancel"] },
+            "description": "prisma.order.update + tx.$executeRaw stock restore. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "verify cancelled (GET /orders/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "Po cancel status to CANCELLED."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is CANCELLED', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CRUD: DELETE (DELETE /orders/:id)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "prisma.orderLine.deleteMany + prisma.order.delete. Oczekiwane: 204."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "after DELETE - returns 404 (GET /orders/:id)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}"] },
+            "description": "Po usunięciu zwraca 404 not_found."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE non-existent returns 404 (P2025)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/999999", "host": ["{{inventory}}"], "path": ["orders", "999999"] },
+            "description": "Prisma rzuca P2025 -> mapowane na 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$queryRaw report (GET /analytics/orders-report)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/analytics/orders-report", "host": ["{{inventory}}"], "path": ["analytics", "orders-report"] },
+            "description": "prisma.$queryRaw z tagged template. Oczekiwane: 200 + tablica z totalOrders i revenue."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has totalOrders field', () => {",
+                  "  const arr = pm.response.json();",
+                  "  pm.expect(arr[0]).to.have.property('totalOrders');",
+                  "  pm.expect(arr[0]).to.have.property('revenue');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup oversell - set stock=1 via PATCH",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quantity\": 198\n}" },
+            "url": { "raw": "{{inventory}}/inventory/p001", "host": ["{{inventory}}"], "path": ["inventory", "p001"] },
+            "description": "Setup: stock=1. Po wczesniejszych testach (PATCH qty=1 w folderze pg, CREATE qty=1, cancel) stock = 199. Odejmujemy 198 -> 1. Oczekiwane: 204."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$queryRaw FOR UPDATE prevents oversell (POST /checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-oversell\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 5, \"price\": 189.99 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Próba kupna 5 sztuk kiedy stock=1. SELECT FOR UPDATE łapie, throw, rollback. Oczekiwane: 409 conflict_oversell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('error is conflict_oversell', () => pm.expect(pm.response.json().error).to.eql('conflict_oversell'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setup $executeRaw - checkout with qty 1",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-cancel-stock\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 1, \"price\": 189.99 }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Po setup oversell stock=1. Checkout qty=1 -> stock 1->0, order PAID. orderId zapamietany w lastOrderId. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lastOrderId', pm.response.json().orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$executeRaw restores stock on cancel (POST /orders/:id/cancel)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{lastOrderId}}/cancel", "host": ["{{inventory}}"], "path": ["orders", "{{lastOrderId}}", "cancel"] },
+            "description": "tx.$executeRaw UPDATE stock = stock + quantity. Oczekiwane: 200. Po tym GET /products/1 pokaże stock przywrócony."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. mongodb native driver",
+      "item": [
+        {
+          "name": "telemetry event - $push $inc $set (POST /telemetry/event)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"action\": \"product_viewed\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"ocean ring detail page visit\"\n}" },
+            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
+            "description": "Native driver, updateOne z 3 operatorami: $push (event do tablicy), $inc (eventCount), $set (lastAction). Upsert. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('upsert result returned', () => pm.expect(body).to.have.any.keys('acknowledged', 'modifiedCount', 'upsertedId'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "telemetry event - second call increments counter",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"action\": \"checkout_started\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"clicked checkout button on cart page\"\n}" },
+            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
+            "description": "Drugie wywołanie z tym samym userId. $inc zwiększa eventCount, $push dorzuca event, $set zmienia lastAction. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$text full-text search (GET /telemetry/search?q=...)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/telemetry/search?q=checkout",
+              "host": ["{{catalog}}"],
+              "path": ["telemetry", "search"],
+              "query": [{ "key": "q", "value": "checkout" }]
+            },
+            "description": "Wykorzystuje indeks tekstowy created on event_log. Oczekiwane: 200, count>=1, znajduje dokument z 'checkout' w action/details."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('count >= 1', () => pm.expect(pm.response.json().count).to.be.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$text search requires q (returns 400)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
+            "description": "Brak ?q -> walidacja zwraca 400 query_required."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is query_required', () => pm.expect(pm.response.json().error).to.eql('query_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart draft add - $push $inc $set (POST /cart-draft/:sid/add)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\",\n  \"variant\": \"diamond/size-7\",\n  \"price\": 189.99\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
+            "description": "Native driver upsert szkicu koszyka z 3 operatorami w jednym write. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart draft add second item",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p002\",\n  \"variant\": \"baby-pink\",\n  \"price\": 149.99\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
+            "description": "Drugi item w tym samym sessionId. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$pull removes item from draft (POST /cart-draft/:sid/remove)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "remove"] },
+            "description": "Operator $pull usuwa item z items[]. 4. operator zapisu (po $push/$inc/$set). Oczekiwane: 200 modified=1."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('modified >= 1', () => pm.expect(pm.response.json().modified).to.be.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$pull on non-existing session returns 404",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
+            "url": { "raw": "{{catalog}}/cart-draft/no-such-session/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "no-such-session", "remove"] },
+            "description": "Brak takiej sesji. Oczekiwane: 404 cart_draft_not_found."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
