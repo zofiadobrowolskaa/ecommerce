@@ -15,10 +15,9 @@ async function connectMongo() {
     dbInstance = client.db('ecommerce_mongo');
     console.log('connected to mongodb via native driver');
 
-    // wishlists collection is managed exclusively by the native driver and powers requirement 5
+    // wishlists collection is managed exclusively by the native driver
     // (singleton client + 3 distinct operators + compound/text index in real endpoints)
     // it is intentionally separate from the mongoose-managed productdetails / reviews
-    // collections that fulfil requirement 16 (graded catalog document model).
 
     // compound index supports listing recent wishlists per user newest-first
     await dbInstance.collection('wishlists').createIndex({ userId: 1, lastModified: -1 });

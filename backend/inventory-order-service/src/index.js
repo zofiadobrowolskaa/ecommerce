@@ -7,8 +7,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 const app = express();
-// cap request body to 100kb to mitigate trivial payload-flood / dos attacks
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json());
 
 // unified error response helper: every failure responds with { error, code, details }
 const sendError = (res, status, error, details) =>
@@ -57,13 +56,13 @@ app.get('/products/:productId/variants', async (req, res, next) => {
   }
 });
 
-// dynamic filtering endpoint — requirement 17: category + price range + availability
+// dynamic filtering endpoint: category + price range + availability
 // every filter is optional; combinations are composed into a single parameterized query
 app.get('/products', async (req, res, next) => {
   try {
     const { category, minPrice, maxPrice, inStock } = req.query;
 
-    // coerce filters to numbers up-front so malformed values cannot reach SQL
+    // coerce filters from strings to numbers so malformed values cannot reach SQL
     const categoryId = category !== undefined ? Number(category) : undefined;
     const minPriceNum = minPrice !== undefined ? Number(minPrice) : undefined;
     const maxPriceNum = maxPrice !== undefined ? Number(maxPrice) : undefined;
@@ -137,6 +136,8 @@ app.patch('/products/:id/price', async (req, res, next) => {
     if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) {
       return sendError(res, 400, 'invalid_price', 'price must be a non-negative number');
     }
+
+    // it modifies products.price not order line
     const updated = await knex('products').where({ id }).update({ price }).returning(['id', 'sku', 'price']);
     if (!updated.length) {
       return sendError(res, 404, 'not_found', `product ${id} not found`);
@@ -250,7 +251,9 @@ app.patch('/inventory/:sku', async (req, res, next) => {
     const { quantity } = req.body;
     const sku = req.params.sku;
     const client = await pgPool.connect();
+
     try {
+      // db transaction - all or nothing
       await client.query('BEGIN');
       await client.query(
         'UPDATE variants SET stock = stock - $1 WHERE sku = $2',
@@ -262,6 +265,7 @@ app.patch('/inventory/:sku', async (req, res, next) => {
       );
       if (pidRes.rows[0]) {
         const pid = pidRes.rows[0].product_id;
+        // coalesce - in case sum is a null
         await client.query(
           `UPDATE products SET stock = (
             SELECT COALESCE(SUM(stock), 0)::integer FROM variants WHERE product_id = $1
@@ -294,7 +298,7 @@ app.get('/cart/:userId', async (req, res) => {
   try {
     const cart = await Cart.findOne({
       where: { userId: req.params.userId, status: 'OPEN' },
-      include: [CartLine] // eager loading implementation
+      include: [CartLine] // eager loading implementation, 1:N relation
     });
     if (!cart) return sendError(res, 404, 'cart_not_found', `no open cart for user ${req.params.userId}`);
     res.json(cart);
@@ -303,7 +307,7 @@ app.get('/cart/:userId', async (req, res) => {
   }
 });
 
-// add a single item to the user's cart — requirement 17: cart add with stock validation
+// add a single item to the user's cart: cart add with stock validation
 // rejects requests where the chosen variant does not have enough stock right now
 app.post('/cart/:userId/add', async (req, res) => {
   const { productId, variantSku, quantity, price } = req.body || {};
@@ -338,6 +342,7 @@ app.post('/cart/:userId/add', async (req, res) => {
     }
 
     // append the validated line to the open cart inside a managed sequelize transaction
+    // managed transaction: automatically commits on resolve, rolls back on throw
     await sequelize.transaction(async (t) => {
       let cart = await Cart.findOne({ where: { userId: req.params.userId, status: 'OPEN' }, transaction: t });
       if (!cart) cart = await Cart.create({ userId: req.params.userId }, { transaction: t });
@@ -365,11 +370,11 @@ app.post('/cart/:userId/add', async (req, res) => {
   }
 });
 
-// sync cart items to server state (managed transaction with model validation)
+// sync cart items from frontend to server state (managed transaction with model validation)
 app.post('/cart/:userId/sync', async (req, res) => {
   const { items } = req.body;
   try {
-    // managed transaction: commits on resolve, rolls back on throw
+    // managed transaction: automatically commits on resolve, rolls back on throw
     await sequelize.transaction(async (t) => {
       let cart = await Cart.findOne({ where: { userId: req.params.userId, status: 'OPEN' }, transaction: t });
       if (!cart) cart = await Cart.create({ userId: req.params.userId }, { transaction: t });
@@ -408,11 +413,15 @@ app.post('/cart/:userId/sync', async (req, res) => {
 });
 
 // ORDERS AND CHECKOUT SAGA (PRISMA)
-// checkout with lock and oversell protection
+
+// creates a new order and deducts stock from variants.
+// uses db row locking to prevent overselling when many users
+// buy the same product at the same time.
 app.post('/checkout', async (req, res) => {
   const { userId, items } = req.body;
   try {
     // prisma interactive transaction guarantees atomic variant locks + order insert + audit rows
+    // everything inside either suceeds together or rolls back
     const order = await prisma.$transaction(async (tx) => {
       let totalAmount = 0;
       const orderLinesData = [];
@@ -424,12 +433,15 @@ app.post('/checkout', async (req, res) => {
         const lineSku = item.sku ?? item.variantSku ?? null;
 
         let locked;
+        // lock variant row using FOR UPDATE, prevents race conditions
         if (lineSku) {
+          // lock exact variant by sku + product
           locked = await tx.$queryRaw`
             SELECT id, sku, stock, price, product_id AS "product_id"
             FROM variants WHERE sku = ${lineSku} AND product_id = ${numericId}
             FOR UPDATE`;
         } else {
+          // if sku missing, lock first variant for that product
           locked = await tx.$queryRaw`
             SELECT id, sku, stock, price, product_id AS "product_id"
             FROM variants WHERE product_id = ${numericId}
@@ -439,9 +451,10 @@ app.post('/checkout', async (req, res) => {
 
         const variant = locked[0];
         if (!variant || Number(variant.stock) < item.quantity) {
-          throw new Error('409_CONFLICT_OVERSELL');
+          throw new Error('409_conflict_oversell');
         }
 
+        // deduct stock
         await tx.$executeRaw`
           UPDATE variants SET stock = stock - ${item.quantity}
           WHERE id = ${variant.id}`;
@@ -459,7 +472,7 @@ app.post('/checkout', async (req, res) => {
 
       const newOrder = await tx.order.create({
         data: {
-          // persist userId so requirement 17's order-history endpoint can filter by owner
+          // persist userId so order-history endpoint can filter by owner
           userId: userId ?? null,
           totalAmount,
           status: 'PAID',

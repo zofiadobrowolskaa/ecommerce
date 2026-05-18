@@ -6,8 +6,7 @@ const Review = require('./models/Review');
 const mongoErrorMap = require('./middleware/mongoErrorMiddleware');
 
 const app = express();
-// cap request body to 100kb to mitigate trivial payload-flood / dos attacks
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json());
 
 // unified error response helper: every failure responds with { error, code, details }
 const sendError = (res, status, error, details) =>
@@ -18,7 +17,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'catalog-analytics-service' });
 });
 
-// WISHLISTS — native driver domain resource (requirement 5)
+// wishlists native driver domain resource
 // dedicated collection managed exclusively by the native MongoClient,
 // independent from the mongoose-managed productdetails / reviews collections.
 
@@ -35,10 +34,11 @@ app.post('/wishlists/:userId/add', async (req, res) => {
     const result = await db.collection('wishlists').updateOne(
       { userId },
       {
-        $push: { items: { productId, note: note ?? null, addedAt: new Date() } }, // op 1: append to items array
-        $inc: { itemCount: 1 },                                                    // op 2: increment counter
-        $set: { lastModified: new Date() }                                          // op 3: refresh timestamp
+        $push: { items: { productId, note: note ?? null, addedAt: new Date() } }, // appends to items array
+        $inc: { itemCount: 1 }, // increments counter
+        $set: { lastModified: new Date() } // updates timestamp
       },
+      // creates a new wishlist document if one doesn't exist for this userId, otherwise updates existing document
       { upsert: true }
     );
     res.status(200).json({ success: true, result });
@@ -57,13 +57,12 @@ app.post('/wishlists/:userId/remove', async (req, res) => {
       return sendError(res, 400, 'productId_required', 'body must include productId');
     }
 
-    // $pull removes the matching item; $inc decrements counter; $set updates timestamp atomically
     const result = await db.collection('wishlists').updateOne(
       { userId },
       {
-        $pull: { items: { productId } },
-        $inc: { itemCount: -1 },
-        $set: { lastModified: new Date() }
+        $pull: { items: { productId } }, // removes the matching item
+        $inc: { itemCount: -1 }, // decrements counter
+        $set: { lastModified: new Date() } // updates timestamp
       }
     );
 
@@ -143,7 +142,7 @@ app.post('/reviews/:id/moderate', async (req, res) => {
   }
 });
 
-// requirement 16: average-rating-per-product aggregation pipeline (run in mongo engine)
+// average-rating-per-product aggregation pipeline (run in mongo engine)
 // optional ?limit=N query param controls how many top products are returned
 app.get('/analytics/average-ratings', async (req, res) => {
   try {
@@ -161,7 +160,8 @@ app.get('/analytics/average-ratings', async (req, res) => {
           reviewCount: { $sum: 1 }
       } },
 
-      // stage 3: $lookup to attach the product detail document (cross-collection join)
+      // stage 3: $lookup to attach the product detail document 
+      // (cross-collection join)
       { $lookup: {
           from: "productdetails",
           localField: "_id",

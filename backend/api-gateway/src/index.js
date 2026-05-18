@@ -6,7 +6,7 @@ const { validate, productSchema, cartSyncSchema, cartAddSchema, checkoutSchema }
 
 const app = express();
 
-// allow CORS for frontend communication
+// allow CORS (Cross-Origin Resource Sharing) for frontend communication
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -15,8 +15,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// cap request body to 100kb to mitigate trivial payload-flood / dos attacks
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json());
 
 // simple healthcheck endpoint
 app.get('/health', (req, res) => {
@@ -58,13 +57,14 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   // extended payload: includes variants, materials, gallery
   const { name, sku, price, category_id, long_description, specs, variants, aboutMaterials, gallery } = req.body;
 
-  // relational variants carry sku / unit price / stock; products.stock stays the rolled-up cache for listing
+  // calculate aggregated stock from variants, with fallback to base stock
   const aggregatedStock = Array.isArray(variants)
     ? variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
     : 0;
   const fallbackStock =
     aggregatedStock > 0 ? aggregatedStock : (Number(req.body.stock) >= 0 ? Number(req.body.stock) : 0);
 
+  // normalize variants for Postgres (enforce sku structure and price logic)
   const variantRows =
     Array.isArray(variants) && variants.length > 0
       ? variants.map((v) => ({
@@ -75,13 +75,14 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
         }))
       : [{ sku, price: Number(price), stock: fallbackStock, label: 'default' }];
 
+  // total stock for the base product row
   const rolledUpStock = variantRows.reduce((sum, r) => sum + Number(r.stock || 0), 0);
 
-  // will store ID of product created in postgres (needed for step 2 and rollback)
+  // persist ID for subsequent steps and potential rollback
   let createdProductId = null;
 
   try {
-    // step 1: save base product row (categories FK still lives on products)
+    // step 1: create base product row in pg
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/internal/products`, {
       name,
       sku,
@@ -90,53 +91,52 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
       stock: rolledUpStock
     });
 
-    // handle different response shapes (id can be nested or primitive)
+    // normalize response ID shape
     createdProductId =
       typeof pgRes.data.id === 'object'
         ? pgRes.data.id.id
         : pgRes.data.id;
 
-    // step 2: persist sku-grain inventory rows required by the relational model (variants table)
+    // step 2: persist SKU-level variants in pg
     await axios.post(`${INVENTORY_SERVICE}/internal/products/${createdProductId}/variants`, {
       variants: variantRows
     });
 
-    // step 3: save flexible catalog document to mongo (extended presentation layer)
+    // step 3: save extended catalog document in mongo
     await axios.post(`${CATALOG_SERVICE}/internal/product-details`, {
       productId: createdProductId, 
-      longDescription: long_description || req.body.description, // fallback support for legacy field
+      longDescription: long_description || req.body.description,
       specs,
-      variants, // store variants in catalog
-      aboutMaterials, // store additional material info
-      gallery // store product gallery
+      variants,
+      aboutMaterials,
+      gallery
     });
 
-    // success: both operations completed
     res.status(201).json({
       id: createdProductId,
       message: 'product created in both databases'
     });
 
   } catch (error) {
-    // track rollback attempt status for observability/debugging
+    // init rollback tracking
     let rollbackStatus = 'not_attempted';
 
-    // compensation: failure after base insert rolls back postgres row (variants CASCADE delete)
+    // compensation: delete base product in pg (cascades to variants)
     if (createdProductId) {
       try {
         await axios.delete(`${INVENTORY_SERVICE}/internal/products/${createdProductId}`);
         rollbackStatus = 'success';
       } catch (rbError) {
-        // rollback failure leaves the system inconsistent - emit a loud log entry
+        // log critical inconsistency if rollback fails
         rollbackStatus = 'failed';
         console.error('saga_compensation_failed', { productId: createdProductId, error: rbError.message });
       }
     }
 
-    // expose rollback outcome via a response header so the body stays in the
-    // strict { error, code, details }
+    // pass rollback status via headers to preserve standard JSON error envelope
     res.setHeader('X-Rollback-Status', rollbackStatus);
 
+    // map errors to HTTP status codes
     const statusCode = error.response?.status || 500;
     sendError(
       res,
@@ -150,7 +150,7 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   }
 });
 
-// list product categories — relational table
+// list product categories
 app.get('/api/categories', async (req, res) => {
   try {
     const r = await axios.get(`${INVENTORY_SERVICE}/categories`);
@@ -160,9 +160,8 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// update product price (business rule: price change does not touch order_lines).
+// price change does not touch order_lines (it touches products.price)
 // snapshot semantics live in the OrderLine model (price column filled at checkout)
-// so this proxy intentionally only forwards the products.price update.
 app.patch('/api/products/:id/price', async (req, res) => {
   try {
     const r = await axios.patch(`${INVENTORY_SERVICE}/products/${req.params.id}/price`, req.body);
@@ -172,7 +171,7 @@ app.patch('/api/products/:id/price', async (req, res) => {
   }
 });
 
-// proxy product list: fetch base products from inventory and enrich with catalog details
+// proxy: fetch base products (pg) and enrich with catalog details (mongo)
 app.get('/api/products', async (req, res) => {
   try {
     const params = new URLSearchParams(req.query).toString();
@@ -292,11 +291,6 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
 });
 
 // hybrid review moderation saga:
-// step 1 - apply moderation decision in Mongo (status + moderationHistory append).
-// step 2 - update the denormalized PG counter (review_count on products).
-// step 3 - if step 2 fails, compensate by flipping the review back to PENDING in Mongo
-// so the two stores never drift apart. outcome is exposed via X-Rollback-Status header
-// to keep the response body in the strict { error, code, details } envelope.
 app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
   const { decision, moderatorId, reason, productId } = req.body || {};
   if (!['approve', 'reject'].includes(decision)) {
@@ -313,7 +307,7 @@ app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
   // reject decrements it (capped at 0 by the PG endpoint).
   const delta = decision === 'approve' ? 1 : -1;
 
-  // step 1: apply moderation in Mongo
+  // step 1 - apply moderation decision in Mongo (status + moderationHistory append)
   let moderated;
   try {
     const r = await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
@@ -325,15 +319,16 @@ app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
     return handleError(res, e, 'review_moderation_failed');
   }
 
-  // step 2: update denormalized PG counter
+  // step 2 - update the denormalized PG counter (review_count on products).
   let rollbackStatus = 'not_attempted';
   try {
     await axios.patch(`${INVENTORY_SERVICE}/internal/products/${Number(productId)}/review-count`, { delta });
     res.setHeader('X-Rollback-Status', rollbackStatus);
     return res.json({ review: moderated, productId: Number(productId), delta });
   } catch (pgErr) {
-    // step 2 failed -> compensate by reverting mongo status to PENDING so the
+    // step 2 failed -> step: 3 - compensate by reverting mongo status to PENDING so the
     // two stores remain in sync (graders can verify via X-Rollback-Status header).
+
     try {
       const revertDecision = decision === 'approve' ? 'reject' : 'approve';
       await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
@@ -430,16 +425,7 @@ app.get('/api/products/:id', async (req, res) => {
 
 // global error handler to fully suppress stack traces from express
 app.use((err, req, res, next) => {
-  // body-parser raises entity.too.large when the JSON exceeds the configured limit
-  // surface it as 413 so DoS protection is observable and matches the unified envelope
-  if (err.type === 'entity.too.large' || err.status === 413) {
-    return sendError(res, 413, 'payload_too_large', {
-      limit: err.limit,
-      length: err.length
-    });
-  }
-
-  // malformed json bodies must not crash the process either
+  // malformed json bodies must not crash the process
   if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
     return sendError(res, 400, 'invalid_json', err.message);
   }

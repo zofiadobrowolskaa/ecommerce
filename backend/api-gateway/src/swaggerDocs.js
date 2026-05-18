@@ -252,7 +252,7 @@ const swaggerDocument = {
     '/api/products/{id}/price': {
       patch: {
         tags: ['Products'],
-        summary: 'Update product list price (req 18 business rule: snapshot-safe)',
+        summary: 'Update product list price (business rule: snapshot-safe)',
         description:
           'Changes products.price only. Historical OrderLine.price snapshots are intentionally not touched, ' +
           'so existing orders keep the price the buyer originally paid.',
@@ -285,7 +285,7 @@ const swaggerDocument = {
     '/api/cart/{userId}/add': {
       post: {
         tags: ['Cart'],
-        summary: 'Add a single item to the server cart with stock validation (req 17)',
+        summary: 'Add a single item to the server cart with stock validation',
         parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' }, example: 'user-123' }],
         requestBody: {
           required: true,
@@ -316,7 +316,7 @@ const swaggerDocument = {
     '/api/reviews/{reviewId}/moderate': {
       post: {
         tags: ['Products'],
-        summary: 'Hybrid review moderation saga (req 19): Mongo status + PG counter with compensation',
+        summary: 'Hybrid review moderation saga: Mongo status + PG counter with compensation',
         description:
           'Step 1: applies the moderation decision in Mongo (Review.status + moderationHistory).' +
           ' Step 2: increments/decrements the denormalized products.review_count column in PG.' +
@@ -360,7 +360,7 @@ const swaggerDocument = {
     '/api/users/{userId}/orders': {
       get: {
         tags: ['Orders'],
-        summary: 'List orders for a single user, newest-first (req 17 order history)',
+        summary: 'List orders for a single user, newest-first',
         parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' }, example: 'user-123' }],
         responses: {
           200: {

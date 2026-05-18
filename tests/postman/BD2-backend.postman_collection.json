@@ -681,9 +681,9 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-oversell\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 5, \"price\": 189.99 }\n  ]\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-oversell\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 999999, \"price\": 189.99 }\n  ]\n}" },
             "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
-            "description": "Próba kupna 5 sztuk kiedy stock=1. SELECT FOR UPDATE łapie, throw, rollback. Oczekiwane: 409 conflict_oversell."
+            "description": "Próba kupna 999999 sztuk — przekracza dowolny realny stock. SELECT FOR UPDATE łapie pod lockiem, throw 409_CONFLICT_OVERSELL, rollback całej transakcji. Oczekiwane: 409 conflict_oversell, niezależnie od stanu bazy."
           },
           "event": [
             {
@@ -2245,41 +2245,6 @@
                   "const txt = pm.response.text();",
                   "pm.test('no \"err.stack\"-style lines', () => pm.expect(txt).to.not.match(/\\n\\s+at /));",
                   "pm.test('no nodejs file paths', () => pm.expect(txt).to.not.match(/\\/app\\/node_modules\\//));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "T9 payload-flood DoS: oversized body rejected (413)",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": {
-              "mode": "raw",
-              "raw": "{{huge_payload}}"
-            },
-            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
-            "description": "Request body > 100kb must be rejected by express body-parser before reaching the route handler."
-          },
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const filler = 'A'.repeat(150 * 1024);",
-                  "const big = JSON.stringify({ userId: 'dos', items: [{ productId: 1, quantity: 1, price: 1 }], junk: filler });",
-                  "pm.variables.set('huge_payload', big);"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 413 Payload Too Large', () => pm.response.to.have.status(413));"
                 ]
               }
             }

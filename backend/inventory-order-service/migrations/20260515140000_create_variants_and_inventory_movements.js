@@ -1,19 +1,18 @@
-// additive schema for requirement 15: saleable sku lives on variants; movements audit stock changes
+// additive schema: sku lives on variants; movements audit stock changes
 
 exports.up = async function up(knex) {
   await knex.schema.createTable('variants', (table) => {
     table.increments('id').primary();
     table
       .integer('product_id')
-      .unsigned()
+      .unsigned() //id cannot be negative
       .notNullable()
       .references('id')
       .inTable('products')
-      .onDelete('CASCADE');
+      .onDelete('CASCADE'); // delete variants automatically when product is removed
     table.string('sku', 255).notNullable().unique();
     table.decimal('price', 10, 2).notNullable();
     table.integer('stock').notNullable().defaultTo(0);
-    // optional human-readable hint (e.g. color); not a separate "modifier row"
     table.string('label', 255).nullable();
     table.index(['product_id']);
   });
@@ -29,6 +28,7 @@ exports.up = async function up(knex) {
     table.index(['order_id']);
   });
 
+  // data migration
   const products = await knex('products').select('id', 'sku', 'price', 'stock');
   if (products.length > 0) {
     await knex('variants').insert(

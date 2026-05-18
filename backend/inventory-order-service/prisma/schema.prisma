@@ -14,7 +14,7 @@ model Order {
   userId      String?
   totalAmount Decimal     @db.Decimal(10, 2)
   status      String      @default("PENDING")
-  lines       OrderLine[]
+  lines       OrderLine[]   //relation
   createdAt   DateTime    @default(now())
 
   @@index([userId, createdAt])

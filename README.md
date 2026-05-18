@@ -243,12 +243,11 @@ The backend implements a defense-in-depth approach. The table below maps concret
 | T6 | **Mongoose / Mongo error exposure** | `ValidationError` → 400, `CastError` → 400, duplicate key (11000) → 409, network errors → 503. The client never sees `err.errInfo` or driver internals. | `mongo-service/src/middleware/mongoErrorMiddleware.js` |
 | T7 | **Race condition / oversell** (CWE-362) | `SELECT … FOR UPDATE` locks **`variants`** rows inside a Prisma interactive checkout transaction so concurrent purchases serialize on SKU-level stock. | `pg-service/src/index.js` (`POST /checkout`) |
 | T8 | **Distributed state corruption** (CWE-460) | Saga Pattern. Failures in step 2 trigger compensating `DELETE` in step 1. Outcome is exposed via `X-Rollback-Status` response header. | `api-gateway/src/index.js` (`POST /api/products`) |
-| T9 | **Payload-flood / DoS** (CWE-770) | `express.json({ limit: '100kb' })` on every service rejects oversized bodies with `413 Payload Too Large`. | all three `index.js` |
-| T10 | **Unhandled rejection / container crash** | `process.on('unhandledRejection', ...)` keeps the container alive and logs the reason instead of letting Node abort. | `pg-service/src/index.js` |
+| T9 | **Unhandled rejection / container crash** | `process.on('unhandledRejection', ...)` keeps the container alive and logs the reason instead of letting Node abort. | `pg-service/src/index.js` |
 
 ### Verifying the mitigations
 
-Run the `14. security` folder in the Postman collection — it covers each of T1, T3, T4, T5, T6 and T9 with a live request and asserts the unified envelope every time.
+Run the `14. security` folder in the Postman collection — it covers T1, T3, T4, T5 and T6 with a live request and asserts the unified envelope every time.
 
 
 ## 🧪 Automated Testing

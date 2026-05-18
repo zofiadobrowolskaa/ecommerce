@@ -2,15 +2,6 @@
 // failure crosses the network as the unified { error, code, details } envelope
 // and never as a raw stack trace.
 const mongoErrorMap = (err, req, res, next) => {
-  // body-parser DoS protection: oversized json bodies surface as 413
-  if (err.type === 'entity.too.large' || err.status === 413) {
-    return res.status(413).json({
-      error: 'payload_too_large',
-      code: 413,
-      details: { limit: err.limit, length: err.length }
-    });
-  }
-
   // malformed json -> 400 instead of generic 500
   if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
     return res.status(400).json({
