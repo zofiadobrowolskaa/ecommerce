@@ -15,22 +15,15 @@ async function connectMongo() {
     dbInstance = client.db('ecommerce_mongo');
     console.log('connected to mongodb via native driver');
 
-    // mongo only allows one text index per collection;
-    // drop legacy index (top-level fields) if present before re-creating with the correct nested path
-    try {
-      await dbInstance.collection('event_log').dropIndex('details_text_action_text');
-    } catch (e) {
-      // ignore if it does not exist (clean db / already migrated)
-    }
+    // wishlists collection is managed exclusively by the native driver
+    // (singleton client + 3 distinct operators + compound/text index in real endpoints)
+    // it is intentionally separate from the mongoose-managed productdetails / reviews
 
-    // text index on nested array fields: events[] contains the actual action/details payload
-    await dbInstance.collection('event_log').createIndex({ "events.details": "text", "events.action": "text" });
+    // compound index supports listing recent wishlists per user newest-first
+    await dbInstance.collection('wishlists').createIndex({ userId: 1, lastModified: -1 });
 
-    // composite index speeds up "events of user X with action Y" lookups
-    await dbInstance.collection('event_log').createIndex({ userId: 1, lastAction: 1 });
-
-    // unique index ensures one draft per session
-    await dbInstance.collection('cart_draft').createIndex({ sessionId: 1 }, { unique: true });
+    // text index on optional note field enables $text search across user wishlist notes
+    await dbInstance.collection('wishlists').createIndex({ "items.note": "text" });
   }
   return dbInstance;
 }

@@ -10,10 +10,14 @@ generator client {
 // order header model
 model Order {
   id          Int         @id @default(autoincrement())
+  // owner of the order — enables per-user order history endpoint
+  userId      String?
   totalAmount Decimal     @db.Decimal(10, 2)
   status      String      @default("PENDING")
-  lines       OrderLine[]
+  lines       OrderLine[]   //relation
   createdAt   DateTime    @default(now())
+
+  @@index([userId, createdAt])
 }
 
 // order items with price snapshot

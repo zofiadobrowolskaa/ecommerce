@@ -1,5 +1,14 @@
 // map pg error codes to http and respond in the unified { error, code, details } envelope
 const pgErrorMap = (err, req, res, next) => {
+  // malformed json -> 400 instead of generic 500
+  if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({
+      error: 'invalid_json',
+      code: 400,
+      details: err.message
+    });
+  }
+
   const codes = {
     '23505': { status: 409, error: 'conflict_unique_violation' },
     '23503': { status: 400, error: 'foreign_key_violation' }

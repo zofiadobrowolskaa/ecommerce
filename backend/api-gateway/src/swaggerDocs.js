@@ -60,7 +60,9 @@ const swaggerDocument = {
           'Filters are bound by Knex query builder - safe against SQL injection.',
         parameters: [
           { name: 'category', in: 'query', schema: { type: 'integer' }, example: 1, description: 'Filter by category id' },
-          { name: 'maxPrice', in: 'query', schema: { type: 'number' }, example: 500, description: 'Maximum price' },
+          { name: 'minPrice', in: 'query', schema: { type: 'number' }, example: 100, description: 'Lower bound of price range' },
+          { name: 'maxPrice', in: 'query', schema: { type: 'number' }, example: 500, description: 'Upper bound of price range' },
+          { name: 'inStock', in: 'query', schema: { type: 'boolean' }, example: true, description: 'Availability — return only products with stock > 0 when set to true' },
           { name: 'page', in: 'query', schema: { type: 'integer' }, example: 1 },
           { name: 'limit', in: 'query', schema: { type: 'integer' }, example: 10 }
         ],
@@ -226,6 +228,154 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/categories': {
+      get: {
+        tags: ['Products'],
+        summary: 'List product categories',
+        responses: {
+          200: {
+            description: 'Array of categories',
+            content: {
+              'application/json': {
+                example: [
+                  { id: 1, name: 'Earrings' },
+                  { id: 2, name: 'Rings' },
+                  { id: 3, name: 'Necklaces' },
+                  { id: 4, name: 'Bracelets' }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    '/api/products/{id}/price': {
+      patch: {
+        tags: ['Products'],
+        summary: 'Update product list price (business rule: snapshot-safe)',
+        description:
+          'Changes products.price only. Historical OrderLine.price snapshots are intentionally not touched, ' +
+          'so existing orders keep the price the buyer originally paid.',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' }, example: 1 }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { type: 'object', required: ['price'], properties: { price: { type: 'number', minimum: 0 } } },
+              example: { price: 299.99 }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Updated product row (only id, sku, price)',
+            content: { 'application/json': { example: { id: 1, sku: 'AURA-001', price: 299.99 } } }
+          },
+          400: {
+            description: 'invalid_id or invalid_price',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          404: {
+            description: 'Product not found',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          }
+        }
+      }
+    },
+    '/api/cart/{userId}/add': {
+      post: {
+        tags: ['Cart'],
+        summary: 'Add a single item to the server cart with stock validation',
+        parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' }, example: 'user-123' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CartAddRequest' },
+              example: { productId: 1, variantSku: 'p001__v001a', quantity: 2, price: 250 }
+            }
+          }
+        },
+        responses: {
+          201: { description: 'Item added to cart' },
+          400: {
+            description: 'Zod validation failed',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          404: {
+            description: 'Product or variant not found',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          409: {
+            description: 'Insufficient stock — available/requested returned in details',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          }
+        }
+      }
+    },
+    '/api/reviews/{reviewId}/moderate': {
+      post: {
+        tags: ['Products'],
+        summary: 'Hybrid review moderation saga: Mongo status + PG counter with compensation',
+        description:
+          'Step 1: applies the moderation decision in Mongo (Review.status + moderationHistory).' +
+          ' Step 2: increments/decrements the denormalized products.review_count column in PG.' +
+          ' On step 2 failure the gateway compensates by reverting the moderation in Mongo so the two ' +
+          'stores stay consistent. Outcome of compensation is exposed via the X-Rollback-Status response header.',
+        parameters: [{ name: 'reviewId', in: 'path', required: true, schema: { type: 'string' }, example: '6555aa11bb22cc33dd44ee55' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['decision', 'moderatorId', 'productId'],
+                properties: {
+                  decision: { type: 'string', enum: ['approve', 'reject'] },
+                  moderatorId: { type: 'string' },
+                  reason: { type: 'string' },
+                  productId: { type: 'integer', description: 'numeric product id whose PG counter is updated' }
+                }
+              },
+              example: { decision: 'approve', moderatorId: 'examiner-bot', reason: 'looks good', productId: 1 }
+            }
+          }
+        },
+        responses: {
+          200: {
+            description: 'Both stores updated successfully (X-Rollback-Status: not_attempted)',
+            content: { 'application/json': { example: { review: { status: 'APPROVED' }, productId: 1, delta: 1 } } }
+          },
+          400: {
+            description: 'Invalid decision or missing productId',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          },
+          502: {
+            description: 'PG counter update failed; mongo side was reverted (X-Rollback-Status: success/failed)',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+          }
+        }
+      }
+    },
+    '/api/users/{userId}/orders': {
+      get: {
+        tags: ['Orders'],
+        summary: 'List orders for a single user, newest-first',
+        parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' }, example: 'user-123' }],
+        responses: {
+          200: {
+            description: 'User orders sorted by createdAt desc (compound index { userId, createdAt })',
+            content: {
+              'application/json': {
+                example: [
+                  { id: 17, userId: 'user-123', status: 'PAID', totalAmount: '500.00', createdAt: '2026-05-15T11:32:00Z', lines: [] }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     '/api/cart/{userId}/sync': {
       post: {
         tags: ['Cart'],
@@ -241,7 +391,7 @@ const swaggerDocument = {
           }
         },
         responses: {
-          200: { description: 'Cart synchronized in PG; draft fire-and-forget logged in Mongo' },
+          200: { description: 'Cart synchronized in PG (single source of truth)' },
           400: {
             description: 'Zod validation failed',
             content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
@@ -252,19 +402,19 @@ const swaggerDocument = {
     '/api/checkout': {
       post: {
         tags: ['Checkout'],
-        summary: 'Transactional checkout (PG SELECT FOR UPDATE + Mongo telemetry)',
+        summary: 'Transactional checkout (variants SELECT FOR UPDATE + Prisma tx)',
         requestBody: {
           required: true,
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/CheckoutRequest' },
-              example: { userId: 'user-123', items: [{ productId: 1, quantity: 2, price: 250 }] }
+              example: { userId: 'user-123', items: [{ productId: 1, sku: 'p001__v001a', quantity: 2, price: 250 }] }
             }
           }
         },
         responses: {
           201: {
-            description: 'Order created, stock decremented, telemetry event logged',
+            description: 'Order created, stock decremented atomically',
             content: { 'application/json': { example: { success: true, orderId: 17 } } }
           },
           409: {
@@ -367,6 +517,11 @@ const swaggerDocument = {
               properties: {
                 id: { type: 'integer' },
                 productId: { type: 'integer' },
+                variantSku: {
+                  type: 'string',
+                  nullable: true,
+                  description: 'Optional pinned variants.sku copied from Sequelize CartLine.variantSku'
+                },
                 quantity: { type: 'integer' },
                 priceAtEntry: { type: 'number' }
               }
@@ -385,11 +540,23 @@ const swaggerDocument = {
               required: ['productId', 'quantity', 'price'],
               properties: {
                 productId: { type: 'integer' },
+                sku: { type: 'string', description: 'Optional variants.sku' },
+                variantSku: { type: 'string', description: 'Alias of sku for cart round-trips' },
                 quantity: { type: 'integer', minimum: 1 },
                 price: { type: 'number', minimum: 0 }
               }
             }
           }
+        }
+      },
+      CartAddRequest: {
+        type: 'object',
+        required: ['productId', 'quantity'],
+        properties: {
+          productId: { type: 'integer', example: 1 },
+          variantSku: { type: 'string', description: 'Optional saleable SKU; if present, stock is checked at variant grain' },
+          quantity: { type: 'integer', minimum: 1, example: 2 },
+          price: { type: 'number', minimum: 0, example: 250 }
         }
       },
       CheckoutRequest: {
@@ -404,6 +571,11 @@ const swaggerDocument = {
               required: ['productId', 'quantity', 'price'],
               properties: {
                 productId: { type: 'integer' },
+                sku: {
+                  type: 'string',
+                  description: 'Optional concrete variants.sku — required for multi-SKU products at checkout'
+                },
+                variantSku: { type: 'string', description: 'Alias of sku' },
                 quantity: { type: 'integer', minimum: 1 },
                 price: { type: 'number', minimum: 0 }
               }

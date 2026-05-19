@@ -3,6 +3,7 @@ const { connectMongo, getDb } = require('./db/mongoClient');
 const connectMongoose = require('./db/mongoose');
 const ProductDetail = require('./models/ProductDetail');
 const Review = require('./models/Review');
+const mongoErrorMap = require('./middleware/mongoErrorMiddleware');
 
 const app = express();
 app.use(express.json());
@@ -16,65 +17,28 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'catalog-analytics-service' });
 });
 
-// telemetry event log endpoint (native driver with 3 operators)
-app.post('/telemetry/event', async (req, res) => {
+// wishlists native driver domain resource
+// dedicated collection managed exclusively by the native MongoClient,
+// independent from the mongoose-managed productdetails / reviews collections.
+
+// add an item to a user's wishlist (native driver, 3 distinct operators + upsert)
+app.post('/wishlists/:userId/add', async (req, res) => {
   try {
     const db = getDb();
-    const { action, userId, details } = req.body;
-
-    // update document with 3 distinct operators
-    const result = await db.collection('event_log').updateOne(
-      { userId },
-      {
-        $push: { events: { action, details, timestamp: new Date() } }, // op 1: push to array
-        $inc: { eventCount: 1 },                                       // op 2: increment counter
-        $set: { lastAction: action }                                   // op 3: set field
-      },
-      { upsert: true } // create if doesn't exist
-    );
-    res.status(201).json(result);
-  } catch (error) {
-    sendError(res, 500, 'internal_server_error', error.message);
-  }
-});
-
-// full-text search across telemetry events using the text index on details + action
-app.get('/telemetry/search', async (req, res) => {
-  try {
-    const db = getDb();
-    const { q } = req.query;
-    if (!q) {
-      return sendError(res, 400, 'query_required', 'pass ?q=keyword');
+    const { userId } = req.params;
+    const { productId, note } = req.body;
+    if (!productId) {
+      return sendError(res, 400, 'productId_required', 'body must include productId');
     }
 
-    // $text query uses the text index created on event_log
-    // textScore lets us sort by relevance
-    const results = await db.collection('event_log')
-      .find({ $text: { $search: q } }, { projection: { score: { $meta: 'textScore' } } })
-      .sort({ score: { $meta: 'textScore' } })
-      .limit(20)
-      .toArray();
-
-    res.json({ count: results.length, results });
-  } catch (error) {
-    sendError(res, 500, 'internal_server_error', error.message);
-  }
-});
-
-// cart draft operations (native driver, 3 operators in one call)
-app.post('/cart-draft/:sessionId/add', async (req, res) => {
-  try {
-    const db = getDb();
-    const { sessionId } = req.params;
-    const { productId, variant, price } = req.body;
-
-    const result = await db.collection('cart_draft').updateOne(
-      { sessionId },
+    const result = await db.collection('wishlists').updateOne(
+      { userId },
       {
-        $set: { lastModified: new Date() },
-        $push: { items: { productId, variant, price, addedAt: new Date() } },
-        $inc: { totalItems: 1 }
+        $push: { items: { productId, note: note ?? null, addedAt: new Date() } }, // appends to items array
+        $inc: { itemCount: 1 }, // increments counter
+        $set: { lastModified: new Date() } // updates timestamp
       },
+      // creates a new wishlist document if one doesn't exist for this userId, otherwise updates existing document
       { upsert: true }
     );
     res.status(200).json({ success: true, result });
@@ -83,31 +47,44 @@ app.post('/cart-draft/:sessionId/add', async (req, res) => {
   }
 });
 
-// remove a specific item from a cart draft using $pull (4th distinct operator)
-app.post('/cart-draft/:sessionId/remove', async (req, res) => {
+// remove a specific item from a user's wishlist using $pull (4th distinct operator)
+app.post('/wishlists/:userId/remove', async (req, res) => {
   try {
     const db = getDb();
-    const { sessionId } = req.params;
+    const { userId } = req.params;
     const { productId } = req.body;
     if (!productId) {
       return sendError(res, 400, 'productId_required', 'body must include productId');
     }
 
-    // $pull removes all matching items from the items array
-    // $inc decrements totalItems atomically in the same write
-    const result = await db.collection('cart_draft').updateOne(
-      { sessionId },
+    const result = await db.collection('wishlists').updateOne(
+      { userId },
       {
-        $pull: { items: { productId } },
-        $set: { lastModified: new Date() },
-        $inc: { totalItems: -1 }
+        $pull: { items: { productId } }, // removes the matching item
+        $inc: { itemCount: -1 }, // decrements counter
+        $set: { lastModified: new Date() } // updates timestamp
       }
     );
 
     if (result.matchedCount === 0) {
-      return sendError(res, 404, 'cart_draft_not_found', `no cart draft for session ${sessionId}`);
+      return sendError(res, 404, 'wishlist_not_found', `no wishlist for user ${userId}`);
     }
     res.json({ success: true, modified: result.modifiedCount });
+  } catch (error) {
+    sendError(res, 500, 'internal_server_error', error.message);
+  }
+});
+
+// fetch a user's wishlist (native driver findOne)
+app.get('/wishlists/:userId', async (req, res) => {
+  try {
+    const db = getDb();
+    const { userId } = req.params;
+    const doc = await db.collection('wishlists').findOne({ userId });
+    if (!doc) {
+      return sendError(res, 404, 'wishlist_not_found', `no wishlist for user ${userId}`);
+    }
+    res.json(doc);
   } catch (error) {
     sendError(res, 500, 'internal_server_error', error.message);
   }
@@ -127,6 +104,8 @@ app.post('/reviews', async (req, res) => {
 });
 
 // fetch approved reviews for a product, with populated productDetail via virtual populate
+// "latest reviews" feed - newest-first ordering is served by the
+// compound index { productId: 1, status: 1, createdAt: -1 } declared on the Review schema
 app.get('/reviews/:productId', async (req, res) => {
   try {
     const productId = Number(req.params.productId);
@@ -163,7 +142,7 @@ app.post('/reviews/:id/moderate', async (req, res) => {
   }
 });
 
-// analytical endpoint using aggregation pipeline executed in the database engine
+// average-rating-per-product aggregation pipeline (run in mongo engine)
 // optional ?limit=N query param controls how many top products are returned
 app.get('/analytics/average-ratings', async (req, res) => {
   try {
@@ -181,7 +160,8 @@ app.get('/analytics/average-ratings', async (req, res) => {
           reviewCount: { $sum: 1 }
       } },
 
-      // stage 3: $lookup to attach the product detail document (cross-collection join)
+      // stage 3: $lookup to attach the product detail document 
+      // (cross-collection join)
       { $lookup: {
           from: "productdetails",
           localField: "_id",
@@ -257,34 +237,53 @@ app.post('/internal/product-details', async (req, res) => {
 });
 
 // fetch product details for api gateway aggregation
-app.get('/product-details/:productId', async (req, res) => {
+app.get('/product-details/:productId', async (req, res, next) => {
   try {
-    const detail = await ProductDetail.findOne({ productId: Number(req.params.productId) });
+    // explicit input validation: productId must be a finite number
+    // (silent NaN match would otherwise return a misleading 404)
+    const id = Number(req.params.productId);
+    if (!Number.isFinite(id)) {
+      return sendError(res, 400, 'invalid_id_format', {
+        path: 'productId',
+        value: req.params.productId,
+        kind: 'numeric'
+      });
+    }
+
+    const detail = await ProductDetail.findOne({ productId: id });
     if (!detail) {
       return sendError(res, 404, 'not_found', `product details for ${req.params.productId} not found`);
     }
 
-    // fetch approved reviews to attach to details
-    const reviews = await Review.find({ productId: Number(req.params.productId), status: 'APPROVED' });
+    // newest-first so clients see "latest reviews" without an extra round trip
+    const reviews = await Review.find({ productId: id, status: 'APPROVED' }).sort({
+      createdAt: -1
+    });
 
     res.status(200).json({
       ...detail.toObject(),
       reviews: reviews
     });
   } catch (error) {
-    sendError(res, 500, 'internal_server_error', error.message);
+    // delegate to mongoErrorMap so the response is never a raw stack trace
+    next(error);
   }
 });
 
-// global error handler (final fallback) - always responds in unified shape
-app.use((err, req, res, next) => {
-  console.error('catalog_system_error:', err.message);
-  sendError(res, 500, 'internal_server_error', 'unexpected critical error');
-});
+// explicit mongo / mongoose error handling - never leak stack traces
+// must be registered AFTER all routes
+app.use(mongoErrorMap);
 
 const PORT = process.env.PORT || 3002;
 
-// init both drivers before starting app
-Promise.all([connectMongo(), connectMongoose()]).then(() => {
-  app.listen(PORT, () => console.log(`catalog service running on ${PORT}`));
-});
+// init both drivers before starting app; sync mongoose-declared indexes (reviews timelines + aggregation prefixes)
+Promise.all([connectMongo(), connectMongoose()])
+  .then(async () => {
+    await Review.syncIndexes();
+    await ProductDetail.syncIndexes();
+    app.listen(PORT, () => console.log(`catalog service running on ${PORT}`));
+  })
+  .catch((err) => {
+    console.error('catalog_service_startup_failed', err);
+    process.exit(1);
+  });

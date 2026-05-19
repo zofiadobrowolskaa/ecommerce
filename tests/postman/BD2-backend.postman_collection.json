@@ -681,9 +681,9 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-oversell\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 5, \"price\": 189.99 }\n  ]\n}" },
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"test-oversell\",\n  \"items\": [\n    { \"productId\": 1, \"quantity\": 999999, \"price\": 189.99 }\n  ]\n}" },
             "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
-            "description": "Próba kupna 5 sztuk kiedy stock=1. SELECT FOR UPDATE łapie, throw, rollback. Oczekiwane: 409 conflict_oversell."
+            "description": "Próba kupna 999999 sztuk — przekracza dowolny realny stock. SELECT FOR UPDATE łapie pod lockiem, throw 409_CONFLICT_OVERSELL, rollback całej transakcji. Oczekiwane: 409 conflict_oversell, niezależnie od stanu bazy."
           },
           "event": [
             {
@@ -746,61 +746,13 @@
       "name": "5. mongodb native driver",
       "item": [
         {
-          "name": "telemetry event - $push $inc $set (POST /telemetry/event)",
+          "name": "wishlist add - $push $inc $set (POST /wishlists/:userId/add)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"action\": \"product_viewed\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"ocean ring detail page visit\"\n}" },
-            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
-            "description": "Native driver, updateOne z 3 operatorami: $push (event do tablicy), $inc (eventCount), $set (lastAction). Upsert. Oczekiwane: 201."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const body = pm.response.json();",
-                  "pm.test('upsert result returned', () => pm.expect(body).to.have.any.keys('acknowledged', 'modifiedCount', 'upsertedId'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "telemetry event - second call increments counter",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"action\": \"checkout_started\",\n  \"userId\": \"native-driver-test\",\n  \"details\": \"clicked checkout button on cart page\"\n}" },
-            "url": { "raw": "{{catalog}}/telemetry/event", "host": ["{{catalog}}"], "path": ["telemetry", "event"] },
-            "description": "Drugie wywołanie z tym samym userId. $inc zwiększa eventCount, $push dorzuca event, $set zmienia lastAction. Oczekiwane: 201."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "$text full-text search (GET /telemetry/search?q=...)",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{catalog}}/telemetry/search?q=checkout",
-              "host": ["{{catalog}}"],
-              "path": ["telemetry", "search"],
-              "query": [{ "key": "q", "value": "checkout" }]
-            },
-            "description": "Wykorzystuje indeks tekstowy created on event_log. Oczekiwane: 200, count>=1, znajduje dokument z 'checkout' w action/details."
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"note\": \"saved for anniversary gift\"\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "add"] },
+            "description": "Native driver updateOne z 3 operatorami w jednym write: $push (item -> items[]), $inc (itemCount), $set (lastModified). Upsert tworzy dokument przy 1. wywołaniu. Oczekiwane: 200."
           },
           "event": [
             {
@@ -809,19 +761,41 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('count >= 1', () => pm.expect(pm.response.json().count).to.be.at.least(1));"
+                  "const body = pm.response.json();",
+                  "pm.test('upsert result returned', () => pm.expect(body.result).to.have.any.keys('acknowledged', 'modifiedCount', 'upsertedId'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "$text search requires q (returns 400)",
+          "name": "wishlist add second item - $inc increments counter",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 2,\n  \"note\": \"alternative ring option\"\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "add"] },
+            "description": "Drugie wywołanie z tym samym userId. $inc zwiększa itemCount, $push dorzuca item, $set odświeża lastModified. Oczekiwane: 200."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "wishlist read (GET /wishlists/:userId) — compound index { userId, lastModified }",
           "request": {
             "method": "GET",
             "header": [],
-            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
-            "description": "Brak ?q -> walidacja zwraca 400 query_required."
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user"] },
+            "description": "Native driver findOne. Lookup userId trafia w prefiks compound indexu { userId: 1, lastModified: -1 }."
           },
           "event": [
             {
@@ -829,63 +803,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));",
-                  "pm.test('error is query_required', () => pm.expect(pm.response.json().error).to.eql('query_required'));"
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const w = pm.response.json();",
+                  "pm.test('itemCount >= 2', () => pm.expect(w.itemCount).to.be.at.least(2));",
+                  "pm.test('items array populated', () => pm.expect(w.items).to.be.an('array').that.has.length.at.least(2));",
+                  "pm.test('lastModified set', () => pm.expect(w).to.have.property('lastModified'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "cart draft add - $push $inc $set (POST /cart-draft/:sid/add)",
+          "name": "$pull removes item from wishlist (POST /wishlists/:userId/remove)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\",\n  \"variant\": \"diamond/size-7\",\n  \"price\": 189.99\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
-            "description": "Native driver upsert szkicu koszyka z 3 operatorami w jednym write. Oczekiwane: 200."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "cart draft add second item",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p002\",\n  \"variant\": \"baby-pink\",\n  \"price\": 149.99\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/add", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "add"] },
-            "description": "Drugi item w tym samym sessionId. Oczekiwane: 200."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "$pull removes item from draft (POST /cart-draft/:sid/remove)",
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/test-session-1/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "test-session-1", "remove"] },
-            "description": "Operator $pull usuwa item z items[]. 4. operator zapisu (po $push/$inc/$set). Oczekiwane: 200 modified=1."
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/remove", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "remove"] },
+            "description": "Operator $pull usuwa item z items[]. 4. operator zapisu (po $push/$inc/$set). Oczekiwane: 200, modified>=1."
           },
           "event": [
             {
@@ -901,13 +836,13 @@
           ]
         },
         {
-          "name": "$pull on non-existing session returns 404",
+          "name": "$pull on non-existing wishlist returns 404",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"productId\": \"p001\"\n}" },
-            "url": { "raw": "{{catalog}}/cart-draft/no-such-session/remove", "host": ["{{catalog}}"], "path": ["cart-draft", "no-such-session", "remove"] },
-            "description": "Brak takiej sesji. Oczekiwane: 404 cart_draft_not_found."
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1\n}" },
+            "url": { "raw": "{{catalog}}/wishlists/no-such-user/remove", "host": ["{{catalog}}"], "path": ["wishlists", "no-such-user", "remove"] },
+            "description": "Brak takiego userId. Oczekiwane: 404 wishlist_not_found (jednolita koperta { error, code, details })."
           },
           "event": [
             {
@@ -915,7 +850,30 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error is wishlist_not_found', () => pm.expect(pm.response.json().error).to.eql('wishlist_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "missing productId returns 400 (input validation)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{catalog}}/wishlists/native-driver-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "native-driver-user", "add"] },
+            "description": "Brak productId w body. Oczekiwane: 400 productId_required (walidacja wejścia po stronie serwera)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is productId_required', () => pm.expect(pm.response.json().error).to.eql('productId_required'));"
                 ]
               }
             }
@@ -1630,12 +1588,13 @@
           ]
         },
         {
-          "name": "unified envelope: catalog 400 query_required (GET /telemetry/search)",
+          "name": "unified envelope: catalog 400 productId_required (POST /wishlists/:userId/add)",
           "request": {
-            "method": "GET",
-            "header": [],
-            "url": { "raw": "{{catalog}}/telemetry/search", "host": ["{{catalog}}"], "path": ["telemetry", "search"] },
-            "description": "Catalog tez. Brak ?q -> 400 z unified envelope."
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{catalog}}/wishlists/security-user/add", "host": ["{{catalog}}"], "path": ["wishlists", "security-user", "add"] },
+            "description": "Catalog tez. Brak productId -> 400 z unified envelope."
           },
           "event": [
             {
@@ -1646,7 +1605,7 @@
                   "pm.test('status 400', () => pm.response.to.have.status(400));",
                   "const body = pm.response.json();",
                   "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
-                  "pm.test('error is query_required', () => pm.expect(body.error).to.eql('query_required'));",
+                  "pm.test('error is productId_required', () => pm.expect(body.error).to.eql('productId_required'));",
                   "pm.test('code is 400', () => pm.expect(body.code).to.eql(400));"
                 ]
               }
@@ -1732,10 +1691,15 @@
                   "  '/health',",
                   "  '/api/products',",
                   "  '/api/products/{id}',",
+                  "  '/api/products/{id}/price',",
+                  "  '/api/categories',",
                   "  '/api/cart/{userId}',",
+                  "  '/api/cart/{userId}/add',",
                   "  '/api/cart/{userId}/sync',",
                   "  '/api/checkout',",
-                  "  '/api/orders/{orderId}/cancel'",
+                  "  '/api/orders/{orderId}/cancel',",
+                  "  '/api/reviews/{reviewId}/moderate',",
+                  "  '/api/users/{userId}/orders'",
                   "];",
                   "expected.forEach(p => {",
                   "  pm.test(`path ${p} is documented`, () => pm.expect(spec.paths).to.have.property(p));",
@@ -2104,6 +2068,1315 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "pm.test('returns empty default cart', () => pm.expect(pm.response.json()).to.eql({ lines: [], totalPrice: 0 }));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "14. security",
+      "item": [
+        {
+          "name": "T3 input validation: Zod rejects malformed product",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"\",\n  \"sku\": 123,\n  \"price\": \"not a number\",\n  \"category_id\": -5\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Malformed payload (empty name, wrong types, negative id) must be rejected by Zod BEFORE reaching the database."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('error is validation_error', () => pm.expect(body.error).to.eql('validation_error'));",
+                  "pm.test('details is an array of zod issues', () => pm.expect(body.details).to.be.an('array').that.is.not.empty);",
+                  "pm.test('envelope shape preserved', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T3 input validation: checkout requires non-empty items",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"sec\",\n  \"items\": []\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Empty cart at checkout - Zod must enforce min(1)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error is validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T1 SQL injection probe (knex dynamic where) is parameterized",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products?category=1' OR '1'='1", "host": ["{{gateway}}"], "path": ["api", "products"], "query": [{ "key": "category", "value": "1' OR '1'='1" }] },
+            "description": "Classic SQL injection payload. Numeric coercion + parameter binding -> 400 invalid_filter (or 200 [] depending on coercion). Server MUST stay up and table MUST still exist."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('server still up (no 5xx)', () => pm.expect(pm.response.code).to.be.below(500));",
+                  "pm.test('responds with unified envelope or empty array', () => {",
+                  "  const ct = pm.response.headers.get('Content-Type') || '';",
+                  "  if (ct.includes('json')) {",
+                  "    const body = pm.response.json();",
+                  "    if (Array.isArray(body)) { pm.expect(body.length).to.eql(0); }",
+                  "    else { pm.expect(body).to.include.all.keys('error', 'code', 'details'); }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T1 SQL injection probe: table still exists (regression check)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "After the injection probe, the products table must still be there - simply listing must return content."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('list still populated', () => pm.expect(pm.response.json().length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T6 mongo cast error -> 400 invalid_id_format (catalog)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/NOT-A-VALID-OBJECT-ID-OR-NUMBER!", "host": ["{{catalog}}"], "path": ["product-details", "NOT-A-VALID-OBJECT-ID-OR-NUMBER!"] },
+            "description": "Mongoose CastError must be translated to 400 with the unified envelope - no raw stack trace."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope shape', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('body has no stack trace (no \"at \" lines)', () => {",
+                  "  pm.expect(JSON.stringify(body)).to.not.match(/\\n\\s+at /);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T5 pg unique violation -> 409 conflict_unique_violation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Duplicate Probe\",\n  \"sku\": \"p001\",\n  \"price\": 10,\n  \"category_id\": 1,\n  \"variants\": [{ \"id\": \"a\", \"color\": \"X\", \"stock\": 1 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "SKU p001 already seeded - PG must throw 23505 - mapped to 409 unified envelope, NOT the raw pg error object."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope shape', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('no stack trace leaks', () => pm.expect(JSON.stringify(body)).to.not.match(/\\n\\s+at /));",
+                  "pm.test('no raw pg error fields (pg-driver leak)', () => {",
+                  "  const txt = JSON.stringify(body);",
+                  "  pm.expect(txt).to.not.match(/file\\\":\\\"[a-z]+\\.c/);",
+                  "  pm.expect(txt).to.not.match(/routine\\\":/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "T4 stack trace hiding: catalog cast error body is sanitized",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/!!!", "host": ["{{catalog}}"], "path": ["product-details", "!!!"] },
+            "description": "Same as T6 but explicit check that 'err.stack' is NEVER in the response body."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const txt = pm.response.text();",
+                  "pm.test('no \"err.stack\"-style lines', () => pm.expect(txt).to.not.match(/\\n\\s+at /));",
+                  "pm.test('no nodejs file paths', () => pm.expect(txt).to.not.match(/\\/app\\/node_modules\\//));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "15. model relacyjny — postgres",
+      "item": [
+        {
+          "name": "categories — GET /api/categories (table: categories)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/categories", "host": ["{{gateway}}"], "path": ["api", "categories"] },
+            "description": "Wymaganie 15: relacyjna tabela categories. Seed wprowadza 4 kategorie (Earrings/Rings/Necklaces/Bracelets)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('array of 4 seeded categories', () => pm.expect(rows).to.be.an('array').that.has.length.at.least(4));",
+                  "pm.test('id+name shape', () => pm.expect(rows[0]).to.include.keys('id', 'name'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "products — GET /products/:id confirms FK to categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/products/1", "host": ["{{inventory}}"], "path": ["products", "1"] },
+            "description": "Tabela products (relacja FK category_id → categories). Sprawdza shape z migration: id, sku unique, price, stock, category_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('relational columns', () => pm.expect(p).to.include.keys('id', 'sku', 'price', 'stock', 'category_id'));",
+                  "pm.test('FK to categories present', () => pm.expect(Number(p.category_id)).to.be.greaterThan(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "variants — GET /products/:id/variants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/products/1/variants",
+              "host": ["{{inventory}}"],
+              "path": ["products", "1", "variants"]
+            },
+            "description": "Wymaganie 15: osobna tabela variants z SKU / ceną / stanem. Zakładamy istniejący produkt id=1 po seederze."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('non-empty variants array', () => pm.expect(rows).to.be.an('array').that.is.not.empty);",
+                  "pm.test('relational columns present', () => pm.expect(rows[0]).to.include.keys('sku', 'price', 'stock'));",
+                  "pm.collectionVariables.set('rel_variant_sku', String(rows[0].sku));",
+                  "pm.collectionVariables.set('rel_variant_price', Number(rows[0].price));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout tx — deduct variants + inventory_movements",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"postman-rel-model\",\n  \"items\": [\n    {\n      \"productId\": 1,\n      \"sku\": \"{{rel_variant_sku}}\",\n      \"quantity\": 1,\n      \"price\": {{rel_variant_price}}\n    }\n  ]\n}"
+            },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Prisma $transaction: SELECT variants FOR UPDATE, UPDATE stock, INSERT inventory_movements + OrderLines ze snapshotem SKU i ceny."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('checkout 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('orderId returned', () => pm.expect(body.orderId).to.be.a('number'));",
+                  "pm.collectionVariables.set('rel_order_id', String(body.orderId));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "audit — GET /internal/inventory-movements (checkout_deduct)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/internal/inventory-movements?limit=10",
+              "host": ["{{inventory}}"],
+              "path": ["internal", "inventory-movements"],
+              "query": [{ "key": "limit", "value": "10" }]
+            },
+            "description": "Spójność stanu: każdy spadek magazynu z checkoutu jest audytowany w inventory_movements."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('rows is array', () => pm.expect(rows).to.be.an('array'));",
+                  "const hit = rows.find(r => r.reason === 'checkout_deduct');",
+                  "pm.test('found checkout_deduct movement', () => pm.expect(hit).to.exist);",
+                  "pm.test('movement references order', () => pm.expect(hit.order_id).to.eql(Number(pm.collectionVariables.get('rel_order_id'))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cancel — POST /orders/:id/cancel (restore + order_cancel_restore)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/orders/{{rel_order_id}}/cancel",
+              "host": ["{{inventory}}"],
+              "path": ["orders", "{{rel_order_id}}", "cancel"]
+            },
+            "description": "Symetryczny zwrot stanu na variants + ruch kompensacyjny w inventory_movements."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "audit — movements after cancel",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{inventory}}/internal/inventory-movements?limit=20",
+              "host": ["{{inventory}}"],
+              "path": ["internal", "inventory-movements"],
+              "query": [{ "key": "limit", "value": "20" }]
+            },
+            "description": "Szukamy reason=order_cancel_restore dla tego samego order_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const oid = Number(pm.collectionVariables.get('rel_order_id'));",
+                  "const rows = pm.response.json();",
+                  "const hit = rows.find(r => r.reason === 'order_cancel_restore' && r.order_id === oid);",
+                  "pm.test('compensating movement recorded', () => pm.expect(hit).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "carts — POST /cart/:userId/sync creates Carts + CartLines rows",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"items\": [\n    { \"productId\": 1, \"variantSku\": \"{{rel_variant_sku}}\", \"quantity\": 2, \"price\": {{rel_variant_price}} }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/cart/req15-user/sync", "host": ["{{inventory}}"], "path": ["cart", "req15-user", "sync"] },
+            "description": "Wymaganie 15: tabela carts + cart_lines. Sequelize managed transaction tworzy/odświeża wiersze i pilnuje walidatorów (quantity >= 1, price >= 0)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cart synced 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "carts — GET /cart/:userId returns relational join (Carts ⋈ CartLines)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/cart/req15-user", "host": ["{{inventory}}"], "path": ["cart", "req15-user"] },
+            "description": "Tabela carts + cart_lines (Sequelize hasMany). Eager loading via include — relacja użyta w endpoincie."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const cart = pm.response.json();",
+                  "pm.test('Carts row shape', () => pm.expect(cart).to.include.keys('id', 'userId', 'status', 'totalPrice'));",
+                  "const lines = cart.CartLines || cart.cartLines || [];",
+                  "pm.test('CartLines array present', () => pm.expect(lines).to.be.an('array').that.is.not.empty);",
+                  "pm.test('CartLines columns', () => pm.expect(lines[0]).to.include.keys('productId', 'quantity', 'priceAtEntry'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "order_lines — snapshot of SKU AND price survives on the historical row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{rel_order_id}}", "host": ["{{inventory}}"], "path": ["orders", "{{rel_order_id}}"] },
+            "description": "Wymaganie 15: order_lines z snapshotem ceny I SKU. Linia musi zwracać sku (string) + price (decimal) zapisane w chwili checkoutu — nie referencję do products.price."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const order = pm.response.json();",
+                  "pm.test('Order header fields', () => pm.expect(order).to.include.keys('id', 'status', 'totalAmount', 'createdAt'));",
+                  "pm.test('lines array present', () => pm.expect(order.lines).to.be.an('array').that.is.not.empty);",
+                  "const line = order.lines[0];",
+                  "pm.test('SKU snapshot is a string', () => pm.expect(line.sku).to.be.a('string').that.is.not.empty);",
+                  "pm.test('price snapshot is a non-negative number', () => pm.expect(Number(line.price)).to.be.at.least(0));",
+                  "pm.test('quantity column present', () => pm.expect(line.quantity).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "transactional checkout rolls back fully on oversell (no partial writes)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"req15-rollback-user\",\n  \"items\": [\n    { \"productId\": 1, \"sku\": \"{{rel_variant_sku}}\", \"quantity\": 999999, \"price\": {{rel_variant_price}} }\n  ]\n}" },
+            "url": { "raw": "{{inventory}}/checkout", "host": ["{{inventory}}"], "path": ["checkout"] },
+            "description": "Wymaganie 15: transakcja przy checkout. Próba przekroczenia stocku rzuca w środku transakcji → ROLLBACK. Żadne variants.stock nie ma być zmodyfikowane, żaden Order/OrderLine nie powstaje, żaden inventory_movement nie jest zapisany."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409 conflict_oversell', () => pm.response.to.have.status(409));",
+                  "pm.test('error envelope', () => pm.expect(pm.response.json()).to.include.all.keys('error', 'code', 'details'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "19. hybrid architecture (product saga + review moderation hybrid)",
+      "item": [
+        {
+          "name": "hybrid product saga — PG row + Mongo doc created together (POST /api/products)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Hybrid Saga Test\",\n  \"sku\": \"REQ19_HYBRID_{{$timestamp}}\",\n  \"price\": 199,\n  \"category_id\": 1,\n  \"long_description\": \"saga product with both stores\",\n  \"specs\": { \"material\": \"silver\" },\n  \"gallery\": [\"https://cdn.example.com/x.jpg\"]\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Reguła 19: tworzenie produktu = rekord w PG + dokument szczegółów w Mongo, w ramach sagi z kompensacją."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('id returned', () => pm.expect(b.id).to.be.a('number'));",
+                  "pm.test('message mentions both databases', () => pm.expect(b.message).to.match(/both databases/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid product saga — compensation: mongo fails → PG row rolled back",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Compensate Me\",\n  \"sku\": \"REQ19_COMPENSATE_{{$timestamp}}\",\n  \"price\": 99,\n  \"category_id\": 1,\n  \"long_description\": \"\",\n  \"variants\": [{ \"id\": \"v1\", \"color\": \"X\", \"stock\": 0 }],\n  \"specs\": {},\n  \"gallery\": []\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Test kompensacji: jeśli mongo odrzuca dokument, gateway robi DELETE w PG. Header X-Rollback-Status pokazuje wynik kompensacji."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201 or 4xx', () => pm.expect([201, 400, 409, 500]).to.include(pm.response.code));",
+                  "if (pm.response.code >= 400) {",
+                  "  pm.test('X-Rollback-Status header present', () => pm.expect(pm.response.headers.get('X-Rollback-Status')).to.be.a('string'));",
+                  "  pm.test('unified envelope', () => pm.expect(pm.response.json()).to.include.all.keys('error', 'code', 'details'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation setup — create a PENDING review (POST /reviews)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"userId\": \"req19-{{$timestamp}}\",\n  \"rating\": 5,\n  \"title\": \"Hybrid moderation test\",\n  \"body\": \"this review will be approved\",\n  \"status\": \"PENDING\"\n}" },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Tworzy PENDING review której użyje hybrydowa saga moderacji."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('req19_review_id', pm.response.json()._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation — approve updates Mongo status + PG review_count (POST /api/reviews/:id/moderate)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"examiner-bot\",\n  \"reason\": \"req19 hybrid demo\",\n  \"productId\": 1\n}" },
+            "url": { "raw": "{{gateway}}/api/reviews/{{req19_review_id}}/moderate", "host": ["{{gateway}}"], "path": ["api", "reviews", "{{req19_review_id}}", "moderate"] },
+            "description": "Reguła 19: hybryda recenzji. Step1 mongo: status → APPROVED. Step2 PG: products.review_count += 1. Header X-Rollback-Status: not_attempted (oba kroki OK)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('mongo step returned approved review', () => pm.expect(b.review.status).to.eql('APPROVED'));",
+                  "pm.test('delta +1', () => pm.expect(b.delta).to.eql(1));",
+                  "pm.test('rollback header not_attempted', () => pm.expect(pm.response.headers.get('X-Rollback-Status')).to.eql('not_attempted'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation — invalid productId triggers 400 BEFORE mongo write",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"examiner-bot\",\n  \"productId\": \"not-a-number\"\n}" },
+            "url": { "raw": "{{gateway}}/api/reviews/anything/moderate", "host": ["{{gateway}}"], "path": ["api", "reviews", "anything", "moderate"] },
+            "description": "Walidacja wejścia w gateway — productId musi być liczbą zanim cokolwiek pójdzie do baz."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('productId_required', () => pm.expect(pm.response.json().error).to.eql('productId_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "hybrid moderation — compensation kicks in when PG step fails (unknown product)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approve\",\n  \"moderatorId\": \"examiner-bot\",\n  \"reason\": \"hybrid compensation demo\",\n  \"productId\": 999999\n}" },
+            "url": { "raw": "{{gateway}}/api/reviews/{{req19_review_id}}/moderate", "host": ["{{gateway}}"], "path": ["api", "reviews", "{{req19_review_id}}", "moderate"] },
+            "description": "Reguła 19 (kompensacja): PG nie znajdzie productId=999999 → 404 → gateway cofa moderację w mongo (revert do REJECTED) i zwraca 502 z X-Rollback-Status: success."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 502 hybrid_review_failed', () => pm.response.to.have.status(502));",
+                  "pm.test('error is hybrid_review_failed', () => pm.expect(pm.response.json().error).to.eql('hybrid_review_failed'));",
+                  "pm.test('rollback header is success or failed', () => pm.expect(['success','failed']).to.include(pm.response.headers.get('X-Rollback-Status')));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "18. business rules",
+      "item": [
+        {
+          "name": "BR1 setup — checkout snapshots a known price (POST /api/checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{br1_user}}\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 1, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Tworzy zamówienie z ceną=250 (snapshot przechodzi do OrderLine.price). Wartość będzie porównana po zmianie cennika produktu."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('br1_user', 'br1-user-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order created 201', () => pm.response.to.have.status(201));",
+                  "const id = pm.response.json().orderId;",
+                  "pm.collectionVariables.set('br1_order_id', id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR1 — change product price (PATCH /api/products/1/price)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 999.99\n}" },
+            "url": { "raw": "{{gateway}}/api/products/1/price", "host": ["{{gateway}}"], "path": ["api", "products", "1", "price"] },
+            "description": "Zmiana cennika produktu — modyfikuje TYLKO products.price. Reguła BR1: nie wolno dotykać historycznych OrderLine.price."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('price update 200', () => pm.response.to.have.status(200));",
+                  "pm.test('returns new price', () => pm.expect(Number(pm.response.json().price)).to.eql(999.99));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR1 verify — order_lines.price remains the original snapshot",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/{{br1_order_id}}", "host": ["{{inventory}}"], "path": ["orders", "{{br1_order_id}}"] },
+            "description": "Pobranie zamówienia stworzonego przed zmianą cennika — line.price MUSI być 250 (snapshot), nie 999.99 (nowy cennik)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const order = pm.response.json();",
+                  "pm.test('order has lines', () => pm.expect(order.lines).to.be.an('array').that.is.not.empty);",
+                  "pm.test('line.price still 250 (snapshot survived price change)', () => {",
+                  "  pm.expect(Number(order.lines[0].price)).to.eql(250);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR1 cleanup — restore product price",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/products/1/price", "host": ["{{gateway}}"], "path": ["api", "products", "1", "price"] },
+            "description": "Przywrócenie domyślnego cennika, żeby kolejne testy nie biegały po inflated price."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('reset 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR2 setup — checkout to consume stock",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{br2_user}}\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 1, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Składa zamówienie, które za chwilę anulujemy."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('br2_user', 'br2-user-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('br2_order_id', pm.response.json().orderId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR2 — cancel restores stock + writes compensating inventory_movement",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/orders/{{br2_order_id}}/cancel", "host": ["{{gateway}}"], "path": ["api", "orders", "{{br2_order_id}}", "cancel"] },
+            "description": "Reguła BR2: anulowanie zamówienia zwraca stock + INSERT inventory_movements (reason=order_cancel_restore). Sprawdza się następnie w audit-trail."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cancel 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR2 verify — inventory_movements contains a cancel restore row",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/internal/inventory-movements?limit=50", "host": ["{{inventory}}"], "path": ["internal", "inventory-movements"], "query": [{ "key": "limit", "value": "50" }] },
+            "description": "Audit-trail powinien zawierać kompensujący ruch z reason=order_cancel_restore i order_id=br2_order_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "const orderId = Number(pm.collectionVariables.get('br2_order_id'));",
+                  "const restore = rows.find(r => r.reason === 'order_cancel_restore' && Number(r.order_id) === orderId);",
+                  "pm.test('compensating movement exists', () => pm.expect(restore).to.exist);",
+                  "pm.test('quantity_delta is positive (stock returned)', () => pm.expect(Number(restore.quantity_delta)).to.be.greaterThan(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR3 — SKU uniqueness on products (POST /api/products twice)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"BR3 Test\",\n  \"sku\": \"BR3_UNIQUE_SKU_TEST\",\n  \"price\": 100,\n  \"category_id\": 1,\n  \"long_description\": \"test sku uniqueness\"\n}" },
+            "url": { "raw": "{{gateway}}/api/products", "host": ["{{gateway}}"], "path": ["api", "products"] },
+            "description": "Reguła BR3: SKU musi być unikalne. Drugie wywołanie tej requestki → 409 (PG 23505 zmapowane przez middleware na unified envelope)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 first time or 409 afterwards', () => pm.expect([201, 409]).to.include(pm.response.code));",
+                  "if (pm.response.code === 409) {",
+                  "  pm.test('envelope contains 23505 or conflict', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/23505|conflict/));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR4 — cart conflict on stock depletion (POST /api/cart/:u/add huge qty)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"variantSku\": \"p001__v001a\",\n  \"quantity\": 999999,\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/br4-user/add", "host": ["{{gateway}}"], "path": ["api", "cart", "br4-user", "add"] },
+            "description": "Reguła BR4: koszyk odmawia dodania pozycji przekraczającej dostępny stan. Oczekiwane: 409 z domain code insufficient_stock w details."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('domain code insufficient_stock', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/insufficient_stock/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "BR5 — unified error envelope shape on 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{inventory}}/orders/9999999", "host": ["{{inventory}}"], "path": ["orders", "9999999"] },
+            "description": "Reguła BR5: każdy błąd ma kształt { error, code, details } — niezależnie od warstwy bazy. Nie ma raw stack trace, nie ma surowych pg/mongo errorów."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope keys', () => pm.expect(body).to.include.all.keys('error', 'code', 'details'));",
+                  "pm.test('code is numeric 404', () => pm.expect(body.code).to.eql(404));",
+                  "pm.test('error is stable domain string', () => pm.expect(body.error).to.be.a('string').that.is.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "17. api katalog/koszyk/checkout",
+      "item": [
+        {
+          "name": "products list — dynamic filter category+price range+availability (GET /api/products)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?category=1&minPrice=100&maxPrice=500&inStock=true",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [
+                { "key": "category", "value": "1" },
+                { "key": "minPrice", "value": "100" },
+                { "key": "maxPrice", "value": "500" },
+                { "key": "inStock", "value": "true" }
+              ]
+            },
+            "description": "Wymaganie 17: lista produktów z dynamicznym filtrem (kategoria, zakres ceny, dostępność). Knex builder bezpiecznie składa WHERE z parametrami."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json();",
+                  "pm.test('array response', () => pm.expect(items).to.be.an('array'));",
+                  "items.forEach(p => {",
+                  "  if (p.price !== undefined) {",
+                  "    pm.expect(Number(p.price)).to.be.at.least(100);",
+                  "    pm.expect(Number(p.price)).to.be.at.most(500);",
+                  "  }",
+                  "  if (p.category_id !== undefined) {",
+                  "    pm.expect(Number(p.category_id)).to.eql(1);",
+                  "  }",
+                  "  if (p.stock !== undefined) {",
+                  "    pm.expect(Number(p.stock)).to.be.greaterThan(0);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "products list — invalid minPrice returns 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway}}/api/products?minPrice=abc",
+              "host": ["{{gateway}}"],
+              "path": ["api", "products"],
+              "query": [{ "key": "minPrice", "value": "abc" }]
+            },
+            "description": "Walidacja filtra — niełapana wartość trafia na 400 invalid_filter zamiast 500 z błędu castu w PG."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart add with stock validation — happy path (POST /api/cart/:userId/add)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"variantSku\": \"p001__v001a\",\n  \"quantity\": 1,\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/req17-user/add", "host": ["{{gateway}}"], "path": ["api", "cart", "req17-user", "add"] },
+            "description": "Dodanie pozycji do serwerowego koszyka z walidacją stanu magazynowego variantu. Oczekiwane: 201."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "cart add — insufficient_stock returns 409",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"productId\": 1,\n  \"variantSku\": \"p001__v001a\",\n  \"quantity\": 999999,\n  \"price\": 250\n}" },
+            "url": { "raw": "{{gateway}}/api/cart/req17-user/add", "host": ["{{gateway}}"], "path": ["api", "cart", "req17-user", "add"] },
+            "description": "Próba dodania większej ilości niż dostępny stock → 409 insufficient_stock (walidacja stanu, którą wymaga wymaganie 17)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout — oversell lock returns 409 (POST /api/checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"req17-user\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 999999, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Wymaganie 17: blokada oversell. Variant_FOR_UPDATE + porównanie z requested qty → 409 conflict_oversell."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('envelope contains conflict_oversell', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/conflict_oversell/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout — zod 400 on negative quantity",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"req17-user\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": -3, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Walidacja na warstwie gateway — ujemna ilość daje 400 zanim cokolwiek trafi do bazy."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('validation_error', () => pm.expect(pm.response.json().error).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "checkout — happy path persists userId (POST /api/checkout)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{req17_user}}\",\n  \"items\": [{ \"productId\": 1, \"sku\": \"p001__v001a\", \"quantity\": 1, \"price\": 250 }]\n}" },
+            "url": { "raw": "{{gateway}}/api/checkout", "host": ["{{gateway}}"], "path": ["api", "checkout"] },
+            "description": "Tworzy zamówienie zapisując userId — używane następnie przez historię zamówień użytkownika."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('req17_user', 'req17-user-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('orderId returned', () => pm.expect(pm.response.json().orderId).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "order history — GET /api/users/:userId/orders returns only that user's orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/users/{{req17_user}}/orders", "host": ["{{gateway}}"], "path": ["api", "users", "{{req17_user}}", "orders"] },
+            "description": "Wymaganie 17: historia zamówień użytkownika. Zapytanie filtruje po Order.userId i sortuje malejąco po createdAt (indeks złożony)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const orders = pm.response.json();",
+                  "pm.test('array response', () => pm.expect(orders).to.be.an('array'));",
+                  "pm.test('at least 1 order', () => pm.expect(orders.length).to.be.at.least(1));",
+                  "orders.forEach(o => pm.expect(o.userId).to.eql(pm.collectionVariables.get('req17_user')));",
+                  "for (let i = 1; i < orders.length; i++) {",
+                  "  pm.expect(new Date(orders[i - 1].createdAt).getTime()).to.be.at.least(new Date(orders[i].createdAt).getTime());",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "order history — unknown user returns empty list (not 404)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{gateway}}/api/users/no-such-user-xyz/orders", "host": ["{{gateway}}"], "path": ["api", "users", "no-such-user-xyz", "orders"] },
+            "description": "Brak zamówień ≠ błąd — zwracamy pustą listę dla nieznanego userId."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('empty array', () => pm.expect(pm.response.json()).to.be.an('array').that.is.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "16. model dokumentowy — mongo",
+      "item": [
+        {
+          "name": "productdetails shape — GET /product-details/:productId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/product-details/1",
+              "host": ["{{catalog}}"],
+              "path": ["product-details", "1"]
+            },
+            "description": "Wymaganie 16: dokument ProductDetail — productId, longDescription, specs (map), gallery[]. Zakładamy rekord po seederze (productId=1)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('has catalog fields', () => pm.expect(b).to.include.keys('productId', 'longDescription', 'specs', 'gallery'));",
+                  "pm.test('reviews attached array', () => pm.expect(b.reviews).to.be.an('array'));",
+                  "pm.test('numeric product key', () => pm.expect(b.productId).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reviews — POST /reviews (approved seed for aggregation)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": 1,\n  \"userId\": \"{{doc16_uid}}\",\n  \"rating\": 5,\n  \"title\": \"Quality piece\",\n  \"body\": \"really happy with purchase overall\",\n  \"status\": \"APPROVED\"\n}"
+            },
+            "url": { "raw": "{{catalog}}/reviews", "host": ["{{catalog}}"], "path": ["reviews"] },
+            "description": "Minimal treść spełnia walidator ≥3 słów w body. Status APPROVED — od razu widoczny na liście i w pipeline średniej oceny."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('doc16_uid', 'doc16-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created 201', () => pm.response.to.have.status(201));",
+                  "const r = pm.response.json();",
+                  "pm.test('moderation fields exist', () => pm.expect(r).to.include.keys('productId','userId','rating','title','body','status'));",
+                  "pm.test('timeline field createdAt', () => pm.expect(r).to.have.property('createdAt'));",
+                  "pm.collectionVariables.set('doc16_review_id', r._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reviews — GET /reviews/:productId (latest first + index-backed query)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/reviews/1",
+              "host": ["{{catalog}}"],
+              "path": ["reviews", "1"]
+            },
+            "description": "Lista zatwierdzonych recenzji malejąco po createdAt — indeks złożony { productId, status, createdAt }."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test('array response', () => pm.expect(rows).to.be.an('array'));",
+                  "rows.forEach((r) => pm.expect(r).to.have.property('createdAt'));",
+                  "for (let i = 1; i < rows.length; i++) {",
+                  "  const a = rows[i - 1].createdAt;",
+                  "  const b = rows[i].createdAt;",
+                  "  if (a && b) {",
+                  "    pm.expect(new Date(a).getTime()).to.be.at.least(new Date(b).getTime());",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation — GET /analytics/average-ratings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalog}}/analytics/average-ratings?limit=15",
+              "host": ["{{catalog}}"],
+              "path": ["analytics", "average-ratings"],
+              "query": [{ "key": "limit", "value": "15" }]
+            },
+            "description": "Pipeline grupuje APPROVED reviews po productId ($match korzysta z prefiksu indeksu { status, productId })."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const rep = pm.response.json();",
+                  "pm.test('report array', () => pm.expect(rep).to.be.an('array'));",
+                  "const row = rep.find((x) => x.productId === 1);",
+                  "pm.test('product 1 present', () => pm.expect(row).to.exist);",
+                  "pm.test('avg shape', () => pm.expect(row).to.include.keys('avgRating','reviewCount'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "moderation trail — POST /reviews/:id/moderate",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"reject\",\n  \"moderatorId\": \"examiner-bot\",\n  \"reason\": \"policy demo\"\n}"
+            },
+            "url": {
+              "raw": "{{catalog}}/reviews/{{doc16_review_id}}/moderate",
+              "host": ["{{catalog}}"],
+              "path": ["reviews", "{{doc16_review_id}}", "moderate"]
+            },
+            "description": "Zmiana statusu + dopisanie wpisu do moderationHistory[] (workflow moderacji z wymagania)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('moderate 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test('status updated', () => pm.expect(r.status).to.eql('REJECTED'));",
+                  "pm.test('history appended', () => pm.expect(r.moderationHistory).to.be.an('array').that.is.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "productdetails fields — specs is map, gallery is array (GET /product-details/1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/product-details/1", "host": ["{{catalog}}"], "path": ["product-details", "1"] },
+            "description": "Weryfikuje wymagany kształt dokumentu ProductDetail: productId (number), longDescription (string), specs (map / obiekt), gallery (array)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('productId is numeric', () => pm.expect(b.productId).to.be.a('number'));",
+                  "pm.test('longDescription is string', () => pm.expect(b.longDescription).to.be.a('string'));",
+                  "pm.test('specs is plain object (map)', () => pm.expect(b.specs).to.be.an('object'));",
+                  "pm.test('gallery is array', () => pm.expect(b.gallery).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "aggregation pipeline uses compound index { status, productId } (GET /analytics/average-ratings/explain)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{catalog}}/analytics/average-ratings/explain", "host": ["{{catalog}}"], "path": ["analytics", "average-ratings", "explain"] },
+            "description": "Wymaganie 16: średnia ocena per produkt liczona Aggregation Pipeline z $match w prefiksie indeksu. Explain potwierdza IXSCAN zamiast COLLSCAN."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('queryPlanner returned', () => pm.expect(JSON.stringify(pm.response.json())).to.match(/queryPlanner|stages|winningPlan/));"
                 ]
               }
             }

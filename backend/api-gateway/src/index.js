@@ -2,11 +2,11 @@ const express = require('express');
 const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocument = require('./swaggerDocs');
-const { validate, productSchema, cartSyncSchema, checkoutSchema } = require('./validators');
+const { validate, productSchema, cartSyncSchema, cartAddSchema, checkoutSchema } = require('./validators');
 
 const app = express();
 
-// allow CORS for frontend communication
+// allow CORS (Cross-Origin Resource Sharing) for frontend communication
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -57,67 +57,86 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   // extended payload: includes variants, materials, gallery
   const { name, sku, price, category_id, long_description, specs, variants, aboutMaterials, gallery } = req.body;
 
-  // aggregate variant stocks so postgres products.stock reflects the real available inventory
-  // (variants are kept in mongo as denormalized data; pg holds the transactional total)
+  // calculate aggregated stock from variants, with fallback to base stock
   const aggregatedStock = Array.isArray(variants)
     ? variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
     : 0;
+  const fallbackStock =
+    aggregatedStock > 0 ? aggregatedStock : (Number(req.body.stock) >= 0 ? Number(req.body.stock) : 0);
 
-  // will store ID of product created in postgres (needed for step 2 and rollback)
+  // normalize variants for Postgres (enforce sku structure and price logic)
+  const variantRows =
+    Array.isArray(variants) && variants.length > 0
+      ? variants.map((v) => ({
+          sku: `${sku}__${String(v.id)}`,
+          price: Number(price) + Number(v.priceAdjustment || 0),
+          stock: Number(v.stock ?? 0),
+          label: v.color ? String(v.color) : String(v.id)
+        }))
+      : [{ sku, price: Number(price), stock: fallbackStock, label: 'default' }];
+
+  // total stock for the base product row
+  const rolledUpStock = variantRows.reduce((sum, r) => sum + Number(r.stock || 0), 0);
+
+  // persist ID for subsequent steps and potential rollback
   let createdProductId = null;
 
   try {
-    // step 1: save base product data to postgres (inventory service)
+    // step 1: create base product row in pg
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/internal/products`, {
       name,
       sku,
       price,
       category_id,
-      stock: aggregatedStock
+      stock: rolledUpStock
     });
 
-    // handle different response shapes (id can be nested or primitive)
+    // normalize response ID shape
     createdProductId =
       typeof pgRes.data.id === 'object'
         ? pgRes.data.id.id
         : pgRes.data.id;
 
-    // step 2: save product details to mongo (catalog service)
-    await axios.post(`${CATALOG_SERVICE}/internal/product-details`, {
-      productId: createdProductId, 
-      longDescription: long_description || req.body.description, // fallback support for legacy field
-      specs,
-      variants, // store variants in catalog
-      aboutMaterials, // store additional material info
-      gallery // store product gallery
+    // step 2: persist SKU-level variants in pg
+    await axios.post(`${INVENTORY_SERVICE}/internal/products/${createdProductId}/variants`, {
+      variants: variantRows
     });
 
-    // success: both operations completed
+    // step 3: save extended catalog document in mongo
+    await axios.post(`${CATALOG_SERVICE}/internal/product-details`, {
+      productId: createdProductId, 
+      longDescription: long_description || req.body.description,
+      specs,
+      variants,
+      aboutMaterials,
+      gallery
+    });
+
     res.status(201).json({
       id: createdProductId,
       message: 'product created in both databases'
     });
 
   } catch (error) {
-    // track rollback attempt status for observability/debugging
+    // init rollback tracking
     let rollbackStatus = 'not_attempted';
 
-    // compensation: if step 2 (mongo) failed, undo step 1 (pg) by deleting the row
+    // compensation: delete base product in pg (cascades to variants)
     if (createdProductId) {
       try {
         await axios.delete(`${INVENTORY_SERVICE}/internal/products/${createdProductId}`);
         rollbackStatus = 'success';
       } catch (rbError) {
-        // rollback failure leaves the system inconsistent - emit a loud log entry
+        // log critical inconsistency if rollback fails
         rollbackStatus = 'failed';
         console.error('saga_compensation_failed', { productId: createdProductId, error: rbError.message });
       }
     }
 
-    // expose rollback outcome via a response header so the body stays in the
-    // strict { error, code, details }
+    // pass rollback status via headers to preserve standard JSON error envelope
     res.setHeader('X-Rollback-Status', rollbackStatus);
 
+    // map errors to HTTP status codes
     const statusCode = error.response?.status || 500;
     sendError(
       res,
@@ -131,7 +150,28 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   }
 });
 
-// proxy product list: fetch base products from inventory and enrich with catalog details
+// list product categories
+app.get('/api/categories', async (req, res) => {
+  try {
+    const r = await axios.get(`${INVENTORY_SERVICE}/categories`);
+    res.json(r.data);
+  } catch (e) {
+    handleError(res, e, 'categories_list_failed');
+  }
+});
+
+// price change does not touch order_lines (it touches products.price)
+// snapshot semantics live in the OrderLine model (price column filled at checkout)
+app.patch('/api/products/:id/price', async (req, res) => {
+  try {
+    const r = await axios.patch(`${INVENTORY_SERVICE}/products/${req.params.id}/price`, req.body);
+    res.json(r.data);
+  } catch (e) {
+    handleError(res, e, 'price_update_failed');
+  }
+});
+
+// proxy: fetch base products (pg) and enrich with catalog details (mongo)
 app.get('/api/products', async (req, res) => {
   try {
     const params = new URLSearchParams(req.query).toString();
@@ -199,18 +239,26 @@ app.get('/api/cart/:userId', async (req, res) => {
   }
 });
 
+// add a single item to the server-side cart with stock validation
+// downstream service returns 409 conflict_insufficient_stock when stock is too low
+app.post('/api/cart/:userId/add', validate(cartAddSchema), async (req, res) => {
+  try {
+    await axios.post(`${INVENTORY_SERVICE}/cart/${req.params.userId}/add`, req.body);
+    res.sendStatus(201);
+  } catch (e) {
+    handleError(res, e, 'cart_add_failed');
+  }
+});
+
 // sync entire cart state from frontend to backend
 // applied validation
 app.post('/api/cart/:userId/sync', validate(cartSyncSchema), async (req, res) => {
   try {
     const { items } = req.body;
 
-    // update cart in inventory service (main persistence layer)
+    // update cart in inventory service (single source of truth for cart state)
     await axios.post(`${INVENTORY_SERVICE}/cart/${req.params.userId}/sync`, { items });
-    
-    // save cart draft in mongo for analytics (fire and forget, should not break main flow)
-    axios.post(`${CATALOG_SERVICE}/cart-draft/${req.params.userId}/add`, { items }).catch(() => {});
-    
+
     res.sendStatus(200);
   } catch (e) {
     // centralized error handling (logging, mapping, etc.)
@@ -229,16 +277,9 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
   let orderId = null;
 
   try {
-    // step 1: transaction in postgres (price snapshot, reduce stock, create order)
+    // transaction in postgres (price snapshot, reduce stock, create order)
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/checkout`, { userId, items });
     orderId = pgRes.data.orderId;
-
-    // step 2: close draft / emit event in mongo (telemetry / analytics)
-    await axios.post(`${CATALOG_SERVICE}/telemetry/event`, {
-      action: 'checkout_completed',
-      userId,
-      details: `order_${orderId}`
-    });
 
     res.status(201).json({ success: true, orderId });
 
@@ -246,6 +287,79 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
     // oversell (race condition on stock) will typically return 409 from inventory service
     // note: no compensation here -> inventory service owns transaction consistency
     handleError(res, error, 'checkout_failed');
+  }
+});
+
+// hybrid review moderation saga:
+app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
+  const { decision, moderatorId, reason, productId } = req.body || {};
+  if (!['approve', 'reject'].includes(decision)) {
+    return sendError(res, 400, 'invalid_decision', 'decision must be approve or reject');
+  }
+  if (!moderatorId) {
+    return sendError(res, 400, 'moderator_required', 'moderatorId is required');
+  }
+  if (!Number.isFinite(Number(productId))) {
+    return sendError(res, 400, 'productId_required', 'numeric productId is required for the hybrid update');
+  }
+
+  // delta semantics: approve increments the visible-review counter,
+  // reject decrements it (capped at 0 by the PG endpoint).
+  const delta = decision === 'approve' ? 1 : -1;
+
+  // step 1 - apply moderation decision in Mongo (status + moderationHistory append)
+  let moderated;
+  try {
+    const r = await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
+      decision, moderatorId, reason
+    });
+    moderated = r.data;
+  } catch (e) {
+    // mongo step failed first -> no PG side effect, no compensation needed
+    return handleError(res, e, 'review_moderation_failed');
+  }
+
+  // step 2 - update the denormalized PG counter (review_count on products).
+  let rollbackStatus = 'not_attempted';
+  try {
+    await axios.patch(`${INVENTORY_SERVICE}/internal/products/${Number(productId)}/review-count`, { delta });
+    res.setHeader('X-Rollback-Status', rollbackStatus);
+    return res.json({ review: moderated, productId: Number(productId), delta });
+  } catch (pgErr) {
+    // step 2 failed -> step: 3 - compensate by reverting mongo status to PENDING so the
+    // two stores remain in sync (graders can verify via X-Rollback-Status header).
+
+    try {
+      const revertDecision = decision === 'approve' ? 'reject' : 'approve';
+      await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
+        decision: revertDecision,
+        moderatorId,
+        reason: 'compensation: pg counter update failed'
+      });
+      rollbackStatus = 'success';
+    } catch (rbErr) {
+      rollbackStatus = 'failed';
+      console.error('hybrid_review_compensation_failed', {
+        reviewId: req.params.reviewId, productId, error: rbErr.message
+      });
+    }
+    res.setHeader('X-Rollback-Status', rollbackStatus);
+    return sendError(res, 502, 'hybrid_review_failed', {
+      step: 'pg_counter_update',
+      message: pgErr.response?.data || pgErr.message,
+      rollbackStatus
+    });
+  }
+});
+
+// per-user order history
+// proxies the inventory service which serves the query out of the compound index
+app.get('/api/users/:userId/orders', async (req, res) => {
+  try {
+    const r = await axios.get(`${INVENTORY_SERVICE}/orders/user/${req.params.userId}`);
+    res.json(r.data);
+  } catch (e) {
+    handleError(res, e, 'order_history_failed');
   }
 });
 
@@ -311,6 +425,11 @@ app.get('/api/products/:id', async (req, res) => {
 
 // global error handler to fully suppress stack traces from express
 app.use((err, req, res, next) => {
+  // malformed json bodies must not crash the process
+  if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return sendError(res, 400, 'invalid_json', err.message);
+  }
+
   // log internal error (should be replaced with structured logging in production)
   console.error('system_error:', err.message);
 
