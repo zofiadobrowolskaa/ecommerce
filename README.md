@@ -81,7 +81,7 @@ sequenceDiagram
             MG-->>G: 4xx { error }
             G->>PG: DELETE /internal/products/:id (compensation — cascades variants)
             PG-->>G: 204
-            G-->>C: 4xx { error, code, details: { rollbackStatus: "success" } }<br/>+ header X-Rollback-Status: success
+            G-->>C: 4xx { error, code, details: { rollbackStatus: "success" } }<br/>with header X-Rollback-Status: success
         else Mongo insert OK
             MG-->>G: 201
             G-->>C: 201 { id, message: "product created in both databases" }
@@ -106,7 +106,7 @@ sequenceDiagram
         PG-->>G: 409 conflict_oversell
         G-->>C: 409 unified envelope
     else Stock OK
-        PG->>PG: UPDATE variants.stock; INSERT inventory_movements; INSERT Order + OrderLines
+        PG->>PG: UPDATE variants.stock, INSERT inventory_movements, INSERT Order and OrderLines
         PG->>PG: COMMIT (rollup products.stock)
         PG-->>G: 201 { orderId }
         G-->>C: 201 { success: true, orderId }
