@@ -1,34 +1,30 @@
 const { MongoClient } = require('mongodb');
 
-// connection uri fallback
+// fallback to default uri if env variable is missing
 const uri = process.env.MONGO_URI || 'mongodb://admin:password@mongodb:27017';
 
-// single shared MongoClient instance for the entire process (singleton)
+// shared singleton client instance for the entire app
 const client = new MongoClient(uri);
 
 let dbInstance = null;
 
-// singleton pattern: connect once, reuse the same db handle everywhere
+// connects once and reuses the database instance
 async function connectMongo() {
   if (!dbInstance) {
     await client.connect();
     dbInstance = client.db('ecommerce_mongo');
     console.log('connected to mongodb via native driver');
 
-    // wishlists collection is managed exclusively by the native driver
-    // (singleton client + 3 distinct operators + compound/text index in real endpoints)
-    // it is intentionally separate from the mongoose-managed productdetails / reviews
-
-    // compound index supports listing recent wishlists per user newest-first
+    // create compound index to speed up user wishlist queries
     await dbInstance.collection('wishlists').createIndex({ userId: 1, lastModified: -1 });
 
-    // text index on optional note field enables $text search across user wishlist notes
+    // create text index for full-text searches inside item notes
     await dbInstance.collection('wishlists').createIndex({ "items.note": "text" });
   }
   return dbInstance;
 }
 
-// synchronous accessor used by endpoints after init has completed
+// sync getter used by endpoints after initialization
 function getDb() {
   if (!dbInstance) {
     throw new Error('db not initialized');
@@ -36,16 +32,15 @@ function getDb() {
   return dbInstance;
 }
 
-// graceful shutdown: drop the connection cleanly before the process exits
+// gracefully close database connection to prevent memory leaks
 async function closeMongo(signal) {
   console.log(`${signal} received: closing mongodb connection`);
   await client.close();
   process.exit(0);
 }
 
-// SIGINT is sent by Ctrl+C in local dev
+// handle shutdown signals (e.g. ctrl+c or docker stop)
 process.on('SIGINT', () => closeMongo('SIGINT'));
-// SIGTERM is the default signal sent by docker stop / orchestrators
 process.on('SIGTERM', () => closeMongo('SIGTERM'));
 
 module.exports = { connectMongo, getDb, client };

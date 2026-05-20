@@ -1,5 +1,6 @@
 const { z } = require('zod');
 
+// defines shape for product variants
 const variantShape = z.object({
   id: z.union([z.string(), z.number()]).optional(),
   color: z.string().optional(),
@@ -9,7 +10,7 @@ const variantShape = z.object({
   size: z.array(z.union([z.string(), z.number()])).optional()
 });
 
-// input validation schemas to protect databases
+// validates incoming product creation payload
 const productSchema = z.object({
   name: z.string().min(1, 'name is required'),
   sku: z.string().min(1, 'sku is required'),
@@ -23,29 +24,32 @@ const productSchema = z.object({
   gallery: z.array(z.any()).optional(),
   rating: z.number().optional(),
   tags: z.array(z.any()).optional(),
-  // optional rollup used only when variants[] is omitted (single default variant row)
+  // optional stock fallback when variants array is omitted
   stock: z.number().int().nonnegative().optional()
 });
 
+// validates individual items during checkout or cart sync
 const checkoutLineSchema = z.object({
   productId: z.union([z.string(), z.number()]),
-  // maps to variants.sku (saleable grain); omit => server picks default variant per product
+  // maps to variant sku; server picks default if omitted
   sku: z.string().min(1).optional(),
   variantSku: z.string().min(1).optional(),
   quantity: z.number().int().positive('quantity must be positive'),
   price: z.number().nonnegative('price cannot be negative')
 });
 
+// validates full cart synchronization payload
 const cartSyncSchema = z.object({
   items: z.array(checkoutLineSchema)
 });
 
+// validates final checkout payload
 const checkoutSchema = z.object({
   userId: z.string().min(1, 'userId is required'),
   items: z.array(checkoutLineSchema).min(1, 'cart cannot be empty')
 });
 
-// schema for the single-item cart-add endpoint (add to cart with stock validation)
+// validates single item addition to cart
 const cartAddSchema = z.object({
   productId: z.union([z.string(), z.number()]),
   variantSku: z.string().min(1).optional(),
@@ -53,13 +57,12 @@ const cartAddSchema = z.object({
   price: z.number().nonnegative('price cannot be negative').optional()
 });
 
-// generic validation middleware
+// generic express middleware for zod validation
 const validate = (schema) => (req, res, next) => {
   try {
     schema.parse(req.body);
     next();
   } catch (err) {
-    // return safe, standardized 400 error without leaking server state
     res.status(400).json({ error: 'validation_error', code: 400, details: err.issues ?? err.errors ?? [] });
   }
 };

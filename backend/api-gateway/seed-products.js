@@ -1,12 +1,9 @@
-// domain seeder for the microservices stack
-// runs as a one-shot docker compose service after the gateway is healthy
-// each POST /api/products triggers the hybrid saga: pg-service writes the base
-// row to Postgres, mongo-service writes the extended document to MongoDB
-
+// runs one-shot seeder for microservices stack
+// triggers hybrid saga to populate postgres and mongodb
 const fs = require('fs');
 
-// gateway base url; defaults to localhost so the script also works from the host
-// when run as a docker compose service it points to api-gateway:3000 via env
+// sets gateway url with fallback to localhost
+// uses env variable when running inside docker
 const GATEWAY_URL = process.env.SEED_GATEWAY_URL || 'http://localhost:3000';
 
 const categoryMap = {
@@ -24,9 +21,9 @@ const seedProducts = async () => {
     console.log(`Found ${products.length} base products to seed...`);
 
     for (const product of products) {
-      // transform legacy JSON into API Gateway-compatible structure
+      // transforms legacy json into api gateway payload
       const productDataToSave = {
-        sku: product.id, // primary product identifier (SKU mapping)
+        sku: product.id, // maps primary identifier to sku
         name: product.name,
         description: product.description,
         price: Number(product.price),
@@ -36,18 +33,18 @@ const seedProducts = async () => {
         aboutMaterials: product.aboutMaterials || {},
         gallery: product.gallery || [],
 
-        // normalize variant structure for catalog service
+        // normalizes variant structure for catalog service
         variants: product.variants.map((v) => ({
           id: v.id,
           color: v.color,
           priceAdjustment: Number(v.priceAdjustment) || 0,
           imageUrl: v.imageUrl,
           size: v.size || [],
-          stock: 100 // default stock value for seeded data
+          stock: 100 // sets default stock value for seeding
         }))
       };
 
-      // post one product at a time so the gateway saga runs per product
+      // posts products sequentially to trigger gateway saga individually
       const response = await fetch(`${GATEWAY_URL}/api/products`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -57,7 +54,7 @@ const seedProducts = async () => {
       if (response.ok) {
         console.log(`success: Added ${product.name}`);
       } else {
-        // gateway returns details inside an envelope; pretty-print for diagnostics
+        // pretty-prints error envelope for diagnostics
         const error = await response.json().catch(() => ({}));
         console.log(`error for ${product.name}:`, JSON.stringify(error, null, 2));
       }

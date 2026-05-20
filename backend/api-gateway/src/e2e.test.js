@@ -2,19 +2,16 @@ const request = require('supertest');
 
 const API_URL = process.env.API_URL || 'http://127.0.0.1:3000';
 
-// critical-path e2e suite. covers every business-critical flow end to end:
-// health, list, oversell protection, checkout, stock reduction, cancel + restore,
-// hybrid saga happy path, hybrid saga compensation, cart sync, single-product aggregation
-// and the unified error envelope contract.
+// tests critical end-to-end business flows across microservices
 describe('e2e critical paths', () => {
   const testUserId = 'u1';
-  // discovered dynamically in step 1 so the suite is resilient to id drift
-  // after multiple seed/restart cycles
+  
+  // fetched dynamically to prevent id drift between test runs
   let testProductId = null;
   let initialStock = 0;
   let createdOrderId = null;
 
-  // gateway is reachable and responsive
+  // verifies if api gateway is reachable
   it('step 0: gateway /health responds 200', async () => {
     const res = await request(API_URL).get('/health');
     expect(res.status).toBe(200);
@@ -27,7 +24,7 @@ describe('e2e critical paths', () => {
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.length).toBeGreaterThan(0);
 
-    // pick the first product that has enough stock for the checkout + oversell tests
+    // selects first product with sufficient stock for testing
     const product = res.body.find(p => Number(p.stock) > 0);
     expect(product).toBeDefined();
 
@@ -43,9 +40,10 @@ describe('e2e critical paths', () => {
 
     const res = await request(API_URL).post('/api/checkout').send(payload);
 
-    // oversell protection should trigger conflict
+    // expects conflict status on oversell attempt
     expect(res.status).toBe(409);
-    // unified envelope contract must hold even on oversell
+    
+    // verifies unified error envelope structure
     expect(res.body).toEqual(expect.objectContaining({
       error: expect.any(String),
       code: 409
@@ -70,7 +68,7 @@ describe('e2e critical paths', () => {
     const res = await request(API_URL).get('/api/products');
     const product = res.body.find(p => p.id === testProductId);
 
-    // stock should decrease exactly by purchased quantity
+    // confirms inventory stock decreased exactly by ordered amount
     expect(product.stock).toBe(initialStock - 1);
   });
 
@@ -81,7 +79,7 @@ describe('e2e critical paths', () => {
     const res = await request(API_URL).get('/api/products');
     const product = res.body.find(p => p.id === testProductId);
 
-    // stock should return to original value after cancellation
+    // confirms stock is restored upon order cancellation
     expect(product.stock).toBe(initialStock);
   });
 
@@ -89,10 +87,11 @@ describe('e2e critical paths', () => {
     const res = await request(API_URL).get(`/api/products/${testProductId}`);
     expect(res.status).toBe(200);
 
-    // base fields come from PG; extended fields (variants, gallery) come from Mongo
+    // validates merged data from postgres and mongodb
     expect(res.body.id).toBe(testProductId);
     expect(typeof res.body.sku).toBe('string');
-    // pg driver returns DECIMAL columns as strings - accept both string and number
+    
+    // safely checks decimal values returned as strings
     expect(Number.isFinite(Number(res.body.price))).toBe(true);
     expect(Array.isArray(res.body.variants)).toBe(true);
     expect(Array.isArray(res.body.gallery)).toBe(true);
@@ -114,14 +113,13 @@ describe('e2e critical paths', () => {
 
     const res = await request(API_URL).post('/api/products').send(payload);
 
-    // expect successful creation in both databases (postgres + mongo)
+    // validates successful product creation in both databases
     expect(res.status).toBe(201);
     expect(res.body.id).toBeDefined();
   });
 
   it('step 8: should compensate (rollback PG) when Mongo step fails', async () => {
-    // duplicate colors trigger the Mongoose custom validator on the catalog side,
-    // causing step 2 of the saga to fail and the gateway to issue the compensating delete
+    // triggers mongoose validator to simulate step failure and test rollback
     const payload = {
       name: 'compensation probe',
       sku: `E2E-ROLLBACK-${Date.now()}`,
@@ -136,13 +134,14 @@ describe('e2e critical paths', () => {
 
     const res = await request(API_URL).post('/api/products').send(payload);
 
-    // gateway must surface mongo failure with the unified envelope
+    // checks if gateway surfaces mongo errors in unified envelope format
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(res.body).toEqual(expect.objectContaining({
       error: expect.any(String),
       code: expect.any(Number)
     }));
-    // compensation outcome is exposed as response header for the client
+    
+    // validates rollback success header
     expect(res.headers['x-rollback-status']).toBe('success');
   });
 
@@ -155,7 +154,7 @@ describe('e2e critical paths', () => {
 
     const res = await request(API_URL).post('/api/products').send(invalidPayload);
 
-    // expect validation layer to reject bad input
+    // expects validation layer to catch and reject bad payload
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('validation_error');
   });
@@ -164,11 +163,11 @@ describe('e2e critical paths', () => {
     const userId = `cart-e2e-${Date.now()}`;
     const items = [{ productId: testProductId, quantity: 2, price: 120 }];
 
-    // push cart state from the "client" to the gateway
+    // syncs local client cart state to server
     const syncRes = await request(API_URL).post(`/api/cart/${userId}/sync`).send({ items });
     expect(syncRes.status).toBe(200);
 
-    // read it back and verify persistence
+    // retrieves cart to verify state persistence
     const getRes = await request(API_URL).get(`/api/cart/${userId}`);
     expect(getRes.status).toBe(200);
     expect(Array.isArray(getRes.body.lines)).toBe(true);

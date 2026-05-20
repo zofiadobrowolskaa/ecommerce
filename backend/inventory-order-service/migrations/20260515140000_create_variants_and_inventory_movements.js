@@ -5,7 +5,7 @@ exports.up = async function up(knex) {
     table.increments('id').primary();
     table
       .integer('product_id')
-      .unsigned() //id cannot be negative
+      .unsigned() // id cannot be negative
       .notNullable()
       .references('id')
       .inTable('products')
