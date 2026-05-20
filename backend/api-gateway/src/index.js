@@ -22,28 +22,27 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'api-gateway' });
 });
 
-// mount openapi swagger ui
+// mounts openapi swagger ui at specific route
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-// expose raw openapi 3.0 contract as downloadable json
-// makes the spec "publishable" - other tools (postman, openapi-generator, redoc) can ingest it
+// exposes raw openapi 3.0 contract as downloadable json for external tools
 app.get('/api-docs.json', (req, res) => {
   res.setHeader('Content-Type', 'application/json');
   res.status(200).send(JSON.stringify(swaggerDocument, null, 2));
 });
 
-// service urls injected via env so the gateway can be reconfigured without code changes
-// defaults point to docker compose service names on the internal network
+// injects service urls via env variables for flexibility
+// defaults to internal docker network service names
 const INVENTORY_SERVICE = process.env.INVENTORY_SERVICE_URL || 'http://pg-service:3001';
 const CATALOG_SERVICE = process.env.CATALOG_SERVICE_URL || 'http://mongo-service:3002';
 
-// unified error envelope used by every gateway response on failure
-// shape contract: { error: string, code: number, details: any }
+// defines unified error envelope for gateway failures
+// ensures consistent shape: error, code, details
 const sendError = (res, status, error, details) => {
   res.status(status).json({ error, code: status, details: details ?? null });
 };
 
-// adapter for downstream service errors (axios) keeping the same contract
+// adapts downstream axios errors to the unified contract
 const handleError = (res, err, defaultError = 'gateway_error') => {
   const status = err.response?.status || 500;
   sendError(res, status, defaultError, err.response?.data || err.message || 'an unexpected error occurred');
@@ -51,20 +50,19 @@ const handleError = (res, err, defaultError = 'gateway_error') => {
 
 // PRODUCTS HYBRID SAGA 
 
-// hybrid product creation saga with compensation
-// applied input validation using zod
+// handles hybrid product creation saga with rollback
+// validates input payload using zod schema
 app.post('/api/products', validate(productSchema), async (req, res) => {
-  // extended payload: includes variants, materials, gallery
   const { name, sku, price, category_id, long_description, specs, variants, aboutMaterials, gallery } = req.body;
 
-  // calculate aggregated stock from variants, with fallback to base stock
+  // calculates total stock from variants with fallback
   const aggregatedStock = Array.isArray(variants)
     ? variants.reduce((sum, v) => sum + (Number(v.stock) || 0), 0)
     : 0;
   const fallbackStock =
     aggregatedStock > 0 ? aggregatedStock : (Number(req.body.stock) >= 0 ? Number(req.body.stock) : 0);
 
-  // normalize variants for Postgres (enforce sku structure and price logic)
+  // formats variants for postgres tracking
   const variantRows =
     Array.isArray(variants) && variants.length > 0
       ? variants.map((v) => ({
@@ -75,14 +73,14 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
         }))
       : [{ sku, price: Number(price), stock: fallbackStock, label: 'default' }];
 
-  // total stock for the base product row
+  // sums total stock for base product record
   const rolledUpStock = variantRows.reduce((sum, r) => sum + Number(r.stock || 0), 0);
 
-  // persist ID for subsequent steps and potential rollback
+  // stores id for next steps and potential rollback
   let createdProductId = null;
 
   try {
-    // step 1: create base product row in pg
+    // step 1: create base product in postgres
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/internal/products`, {
       name,
       sku,
@@ -91,18 +89,18 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
       stock: rolledUpStock
     });
 
-    // normalize response ID shape
+    // normalizes returned product id
     createdProductId =
       typeof pgRes.data.id === 'object'
         ? pgRes.data.id.id
         : pgRes.data.id;
 
-    // step 2: persist SKU-level variants in pg
+    // step 2: save sku-level variants in postgres
     await axios.post(`${INVENTORY_SERVICE}/internal/products/${createdProductId}/variants`, {
       variants: variantRows
     });
 
-    // step 3: save extended catalog document in mongo
+    // step 3: save extended catalog details in mongodb
     await axios.post(`${CATALOG_SERVICE}/internal/product-details`, {
       productId: createdProductId, 
       longDescription: long_description || req.body.description,
@@ -118,25 +116,25 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
     });
 
   } catch (error) {
-    // init rollback tracking
+    // initializes rollback status
     let rollbackStatus = 'not_attempted';
 
-    // compensation: delete base product in pg (cascades to variants)
+    // executes compensation deleting postgres record
     if (createdProductId) {
       try {
         await axios.delete(`${INVENTORY_SERVICE}/internal/products/${createdProductId}`);
         rollbackStatus = 'success';
       } catch (rbError) {
-        // log critical inconsistency if rollback fails
+        // logs critical inconsistency if rollback fails
         rollbackStatus = 'failed';
         console.error('saga_compensation_failed', { productId: createdProductId, error: rbError.message });
       }
     }
 
-    // pass rollback status via headers to preserve standard JSON error envelope
+    // sets rollback status in response headers
     res.setHeader('X-Rollback-Status', rollbackStatus);
 
-    // map errors to HTTP status codes
+    // maps error to proper http status code
     const statusCode = error.response?.status || 500;
     sendError(
       res,
@@ -160,43 +158,46 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// price change does not touch order_lines (it touches products.price)
-// snapshot semantics live in the OrderLine model (price column filled at checkout)
+// update product price without affecting past orders
 app.patch('/api/products/:id/price', async (req, res) => {
   try {
+    // forward patch request to inventory service
     const r = await axios.patch(`${INVENTORY_SERVICE}/products/${req.params.id}/price`, req.body);
+    
     res.json(r.data);
   } catch (e) {
     handleError(res, e, 'price_update_failed');
   }
 });
 
-// proxy: fetch base products (pg) and enrich with catalog details (mongo)
+// fetch products and enrich with catalog details
 app.get('/api/products', async (req, res) => {
   try {
+    // parse query parameters to forward them
     const params = new URLSearchParams(req.query).toString();
 
-    // fetch base product list from inventory service (Postgres)
+    // fetch base products from postgres inventory
     const invRes = await axios.get(`${INVENTORY_SERVICE}/products?${params}`);
     const baseProducts = invRes.data;
 
-    // normalize response shape (array or paginated object)
+    // extract items whether response is an array or paginated object
     const isArray = Array.isArray(baseProducts);
     const items = isArray ? baseProducts : (baseProducts.items || baseProducts.data || []);
 
-    // enrich each product with catalog data (Mongo)
+    // merge each item with detailed mongodb catalog data
     const mergedItems = await Promise.all(items.map(async (p) => {
+      // silently catch errors if details are missing
       const catRes = await axios.get(`${CATALOG_SERVICE}/product-details/${p.id}`).catch(() => null);
       const details = catRes?.data || {};
 
       return {
         ...p,
-        variants: details.variants || [], // include variants in list response
+        variants: details.variants || [],
         gallery: details.gallery || []
       };
     }));
 
-    // preserve original response format (array or paginated)
+    // restore original response shape before sending
     if (isArray) {
       res.json(mergedItems);
     } else {
@@ -211,15 +212,13 @@ app.get('/api/products', async (req, res) => {
 
 // SERVER-SIDE CART
 
-// get server cart state
+// fetch current cart state for a user
 app.get('/api/cart/:userId', async (req, res) => {
   try {
-    // fetch cart from inventory service (source of truth)
+    // fetch cart from inventory service
     const r = await axios.get(`${INVENTORY_SERVICE}/cart/${req.params.userId}`);
 
-    // sequelize returns the association name verbatim (CartLines) - normalize
-    // to a stable client contract { id, userId, status, totalPrice, lines }
-    // so the api shape never depends on the orm
+    // normalize payload shape to decouple api from orm
     const raw = r.data || {};
     res.json({
       id: raw.id,
@@ -229,85 +228,85 @@ app.get('/api/cart/:userId', async (req, res) => {
       lines: raw.CartLines || raw.cartLines || raw.lines || []
     });
   } catch (e) {
-    // if cart does not exist yet, return empty state instead of error
     if (e.response?.status === 404) {
       return res.json({ lines: [], totalPrice: 0 });
     }
-
-    // delegate other errors to centralized handler
     handleError(res, e);
   }
 });
 
-// add a single item to the server-side cart with stock validation
-// downstream service returns 409 conflict_insufficient_stock when stock is too low
+// add a single item to cart with stock check
+// handles 409 conflict if stock is insufficient
 app.post('/api/cart/:userId/add', validate(cartAddSchema), async (req, res) => {
   try {
+    // forward add request to inventory service
     await axios.post(`${INVENTORY_SERVICE}/cart/${req.params.userId}/add`, req.body);
+    
     res.sendStatus(201);
   } catch (e) {
     handleError(res, e, 'cart_add_failed');
   }
 });
 
-// sync entire cart state from frontend to backend
-// applied validation
+// synchronize full cart state from frontend
+// validates payload using predefined schema
 app.post('/api/cart/:userId/sync', validate(cartSyncSchema), async (req, res) => {
   try {
     const { items } = req.body;
 
-    // update cart in inventory service (single source of truth for cart state)
+    // push entire cart state to inventory service
     await axios.post(`${INVENTORY_SERVICE}/cart/${req.params.userId}/sync`, { items });
 
     res.sendStatus(200);
   } catch (e) {
-    // centralized error handling (logging, mapping, etc.)
     handleError(res, e);
   }
 });
 
 // CHECKOUT SAGA
 
-// checkout proxy with oversell check and hybrid event
-// applied validation
+// handle checkout with oversell protection
 app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
   const { userId, items } = req.body;
 
-  // will store created order id (used for response / potential tracking)
+  // stores created order id for response
   let orderId = null;
 
   try {
-    // transaction in postgres (price snapshot, reduce stock, create order)
+    // executes postgres transaction to create order and reduce stock
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/checkout`, { userId, items });
+    
+    // extract order id from inventory service response
     orderId = pgRes.data.orderId;
 
     res.status(201).json({ success: true, orderId });
 
   } catch (error) {
-    // oversell (race condition on stock) will typically return 409 from inventory service
-    // note: no compensation here -> inventory service owns transaction consistency
     handleError(res, error, 'checkout_failed');
   }
 });
 
-// hybrid review moderation saga:
+// handle hybrid review moderation saga
 app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
   const { decision, moderatorId, reason, productId } = req.body || {};
+  
+  // validate decision type
   if (!['approve', 'reject'].includes(decision)) {
     return sendError(res, 400, 'invalid_decision', 'decision must be approve or reject');
   }
+  
   if (!moderatorId) {
     return sendError(res, 400, 'moderator_required', 'moderatorId is required');
   }
+  
   if (!Number.isFinite(Number(productId))) {
     return sendError(res, 400, 'productId_required', 'numeric productId is required for the hybrid update');
   }
 
-  // delta semantics: approve increments the visible-review counter,
-  // reject decrements it (capped at 0 by the PG endpoint).
+  // calculate counter delta based on moderation decision
   const delta = decision === 'approve' ? 1 : -1;
 
-  // step 1 - apply moderation decision in Mongo (status + moderationHistory append)
+  // step 1: apply moderation decision in mongodb
   let moderated;
   try {
     const r = await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
@@ -315,21 +314,23 @@ app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
     });
     moderated = r.data;
   } catch (e) {
-    // mongo step failed first -> no PG side effect, no compensation needed
     return handleError(res, e, 'review_moderation_failed');
   }
 
-  // step 2 - update the denormalized PG counter (review_count on products).
+  // initializes rollback status
   let rollbackStatus = 'not_attempted';
+  
+  // step 2: update denormalized review counter in postgres
   try {
     await axios.patch(`${INVENTORY_SERVICE}/internal/products/${Number(productId)}/review-count`, { delta });
+    
+    // set header and return success response
     res.setHeader('X-Rollback-Status', rollbackStatus);
     return res.json({ review: moderated, productId: Number(productId), delta });
   } catch (pgErr) {
-    // step 2 failed -> step: 3 - compensate by reverting mongo status to PENDING so the
-    // two stores remain in sync (graders can verify via X-Rollback-Status header).
-
+    // step 3: execute compensation if postgres update fails
     try {
+      // revert to opposite decision to keep databases in sync
       const revertDecision = decision === 'approve' ? 'reject' : 'approve';
       await axios.post(`${CATALOG_SERVICE}/reviews/${req.params.reviewId}/moderate`, {
         decision: revertDecision,
@@ -338,11 +339,14 @@ app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
       });
       rollbackStatus = 'success';
     } catch (rbErr) {
+      // log critical inconsistency if rollback fails
       rollbackStatus = 'failed';
       console.error('hybrid_review_compensation_failed', {
         reviewId: req.params.reviewId, productId, error: rbErr.message
       });
     }
+    
+    // set header and return 502 bad gateway error
     res.setHeader('X-Rollback-Status', rollbackStatus);
     return sendError(res, 502, 'hybrid_review_failed', {
       step: 'pg_counter_update',
@@ -352,37 +356,38 @@ app.post('/api/reviews/:reviewId/moderate', async (req, res) => {
   }
 });
 
-// per-user order history
-// proxies the inventory service which serves the query out of the compound index
+// fetch order history for a specific user
+// proxies inventory service which uses a compound index
 app.get('/api/users/:userId/orders', async (req, res) => {
   try {
+    // fetch user orders from downstream inventory service
     const r = await axios.get(`${INVENTORY_SERVICE}/orders/user/${req.params.userId}`);
+    
     res.json(r.data);
   } catch (e) {
     handleError(res, e, 'order_history_failed');
   }
 });
 
-// cancel order and return stock
+// cancel an order and restore its stock
 app.post('/api/orders/:orderId/cancel', async (req, res) => {
-  // delegate cancellation to inventory (restores stock + updates order state)
+  // delegate cancellation to inventory service to handle stock logic
   axios.post(`${INVENTORY_SERVICE}/orders/${req.params.orderId}/cancel`)
     .then(() => res.sendStatus(200))
     .catch(e => handleError(res, e));
 });
 
-// aggregate product data: postgres (base data - inventory) + mongo (extended details - catalog)
+// aggregate product data from postgres and mongodb
 app.get('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // build url from env-configured service base (consistent with axios calls above)
+    // construct url for inventory service using env variable
     const inventoryUrl = `${INVENTORY_SERVICE}/products/${id}`;
 
-    // fetch base product first (may resolve SKU -> numeric ID)
+    // fetch base product details
     const invResponse = await fetch(inventoryUrl);
 
-    // handle inventory errors (source of truth)
     if (!invResponse.ok) {
       if (invResponse.status === 404) {
         return sendError(res, 404, 'not_found', 'product not found');
@@ -390,30 +395,33 @@ app.get('/api/products/:id', async (req, res) => {
       throw new Error(`inventory service error: status ${invResponse.status}`);
     }
 
-    // extract numeric ID required by catalog service (Mongo)
+    // parse response and extract numeric id for catalog lookup
     const inventoryData = await invResponse.json();
     const numericId = inventoryData.id;
 
-    // catalog lookup also uses env-configured base url
+    // construct url for catalog service
     const catalogUrl = `${CATALOG_SERVICE}/product-details/${numericId}`;
 
-    // catalog is optional → fallback if unavailable
+    // attempt to fetch catalog data with silent fallback
     const catResponse = await fetch(catalogUrl).catch(() => null);
     let catalogData = {};
 
+    // parse catalog response if successful
     if (catResponse && catResponse.ok) {
       catalogData = await catResponse.json();
     }
 
-    // merge base product with extended catalog fields
+    // merge inventory and catalog data into single object
     const aggregatedProduct = {
       ...inventoryData,
       description: catalogData.longDescription || inventoryData.description || "",
       specs: catalogData.specs || {},
       gallery: catalogData.gallery || [],
       reviews: catalogData.reviews || [],
-      variants: catalogData.variants || [], // include variants from catalog
-      aboutMaterials: catalogData.aboutMaterials || {} // include material details
+      // attach variants from catalog
+      variants: catalogData.variants || [],
+      // attach material details
+      aboutMaterials: catalogData.aboutMaterials || {}
     };
 
     res.status(200).json(aggregatedProduct);
@@ -423,19 +431,19 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// global error handler to fully suppress stack traces from express
+// global error handler preventing stack trace leaks
 app.use((err, req, res, next) => {
-  // malformed json bodies must not crash the process
+  // handle malformed json payloads safely
   if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
     return sendError(res, 400, 'invalid_json', err.message);
   }
 
-  // log internal error (should be replaced with structured logging in production)
+  // log internal error for server diagnostics
   console.error('system_error:', err.message);
 
-  // do not leak internals to client; respond in the unified { error, code, details } shape
   sendError(res, 500, 'internal_server_error', 'unexpected critical error');
 });
 
 const PORT = 3000;
+
 app.listen(PORT, () => console.log(`api gateway listening on port ${PORT}`));

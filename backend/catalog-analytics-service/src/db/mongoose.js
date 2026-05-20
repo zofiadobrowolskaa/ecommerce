@@ -7,10 +7,8 @@ const uri = process.env.MONGO_URI || 'mongodb://admin:password@mongodb:27017/eco
 const connectMongoose = async () => {
   try {
     await mongoose.connect(uri);
-    // log successful connection
     console.log('connected to mongodb via mongoose');
   } catch (error) {
-    // log connection error
     console.error('mongoose connection error:', error);
   }
 };

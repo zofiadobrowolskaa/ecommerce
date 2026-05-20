@@ -1,5 +1,5 @@
+// migration 1: creates the base products table (schema-only, no data)
 exports.up = function(knex) {
-  // create initial products table
   return knex.schema.createTable('products', table => {
     table.increments('id').primary();
     table.string('name').notNullable();

@@ -4,28 +4,27 @@ datasource db {
 }
 
 generator client {
+  // generates typed prisma client during build
   provider = "prisma-client-js"
 }
 
-// order header model
 model Order {
   id          Int         @id @default(autoincrement())
-  // owner of the order — enables per-user order history endpoint
-  userId      String?
+  userId      String?     // optional field to support guest checkouts
   totalAmount Decimal     @db.Decimal(10, 2)
   status      String      @default("PENDING")
-  lines       OrderLine[]   //relation
+  lines       OrderLine[]
   createdAt   DateTime    @default(now())
 
+  // compound index for faster user history queries
   @@index([userId, createdAt])
 }
 
-// order items with price snapshot
 model OrderLine {
   id        Int     @id @default(autoincrement())
   orderId   Int
   order     Order   @relation(fields: [orderId], references: [id])
   sku       String
-  price     Decimal @db.Decimal(10, 2) // price snapshot
+  price     Decimal @db.Decimal(10, 2) // static price snapshot taken at checkout
   quantity  Int
 }

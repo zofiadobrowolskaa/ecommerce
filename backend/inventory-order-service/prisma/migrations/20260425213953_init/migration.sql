@@ -1,4 +1,3 @@
--- CreateTable
 CREATE TABLE "Order" (
     "id" SERIAL NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'PENDING',
@@ -7,7 +6,6 @@ CREATE TABLE "Order" (
     CONSTRAINT "Order_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
 CREATE TABLE "OrderLine" (
     "id" SERIAL NOT NULL,
     "orderId" INTEGER NOT NULL,
@@ -18,5 +16,4 @@ CREATE TABLE "OrderLine" (
     CONSTRAINT "OrderLine_pkey" PRIMARY KEY ("id")
 );
 
--- AddForeignKey
 ALTER TABLE "OrderLine" ADD CONSTRAINT "OrderLine_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

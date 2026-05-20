@@ -55,7 +55,7 @@ flowchart LR
 
 Each microservice owns exactly one database engine. The gateway never talks to a database directly - it always goes through one of the two domain services.
 
-## 🔁 Data Flow — Hybrid Product Creation Saga (PG + Mongo with Compensation)
+## 🔁 Data Flow - Hybrid Product Creation Saga (PG + Mongo with Compensation)
 
 This is the canonical "write to both databases" flow. It demonstrates how the saga keeps the two stores consistent even though there is no shared transaction manager.
 
@@ -68,15 +68,15 @@ sequenceDiagram
 
     C->>G: POST /api/products { name, sku, price, variants, ... }
     G->>G: Zod validation
-    G->>PG: POST /internal/products (step 1: insert base row)
+    G->>PG: POST /internal/products (step 1: insert base row in pg)
     alt PG insert fails (e.g. SQLSTATE 23505 unique sku)
         PG-->>G: 409 / 400 { error, code, details }
         G-->>C: 409 / 400 unified envelope (no compensation needed)
     else PG insert OK
         PG-->>G: 201 { id }
-        G->>PG: POST /internal/products/:id/variants (sku / price / stock rows)
+        G->>PG: POST /internal/products/:id/variants (step 2: persist SKU-level variants in pg)
         PG-->>G: 204
-        G->>MG: POST /internal/product-details (step 3: insert document)
+        G->>MG: POST /internal/product-details (step 3: save extended catalog document in mongo)
         alt Mongo insert fails (Mongoose validator, duplicate productId, ...)
             MG-->>G: 4xx { error }
             G->>PG: DELETE /internal/products/:id (compensation — cascades variants)
@@ -89,7 +89,7 @@ sequenceDiagram
     end
 ```
 
-## 🔁 Data Flow — Transactional Checkout (PG Prisma transaction)
+## 🔁 Data Flow - Transactional Checkout (PG Prisma transaction)
 
 ```mermaid
 sequenceDiagram
@@ -233,16 +233,16 @@ Both responses are always shaped as the unified `{ error, code, details }` envel
 
 The backend implements a defense-in-depth approach. The table below maps concrete threats to the layer that mitigates them.
 
-| # | Threat (OWASP / CWE) | Mitigation in this project | File |
+| # | Threat | Mitigation in this project | File |
 |---|---|---|---|
-| T1 | **SQL injection** (CWE-89) | All PG calls use parameterized queries (`$1, $2`). Knex query builder binds values, never concatenates strings. Numeric query params are coerced and validated before they reach SQL. | `pg-service/src/index.js`, `pg-service/src/db/pg.js` |
-| T2 | **NoSQL injection** (CWE-943) | All write paths go through Mongoose schemas with explicit types + custom validators. The native driver receives only objects assembled server-side. | `mongo-service/src/models/*.js`, `mongo-service/src/db/mongoClient.js` |
-| T3 | **Malformed input / bad types** (CWE-20) | Every public POST/PUT on the gateway runs through a Zod schema before hitting the saga. Invalid input → 400 `validation_error`. | `api-gateway/src/validators.js` |
-| T4 | **Stack trace / error info leak** (CWE-209) | Global Express error handlers in **all three services** return the unified `{ error, code, details }` envelope. `err.stack` is logged server-side only. | `pgErrorMap`, `mongoErrorMap`, gateway global handler |
-| T5 | **Unique constraint exposure** (CWE-209) | Postgres `SQLSTATE 23505` is mapped to `409 conflict_unique_violation`; FK violation `23503` → `400 foreign_key_violation`. No raw `pg` error object is forwarded. | `pg-service/src/middleware/errorMiddleware.js` |
+| T1 | **SQL injection** | All PG calls use parameterized queries (`$1, $2`). Knex query builder binds values, never concatenates strings. Numeric query params are coerced and validated before they reach SQL. | `pg-service/src/index.js`, `pg-service/src/db/pg.js` |
+| T2 | **NoSQL injection** | All write paths go through Mongoose schemas with explicit types + custom validators. The native driver receives only objects assembled server-side. | `mongo-service/src/models/*.js`, `mongo-service/src/db/mongoClient.js` |
+| T3 | **Malformed input / bad types** | Every public POST/PUT on the gateway runs through a Zod schema before hitting the saga. Invalid input → 400 `validation_error`. | `api-gateway/src/validators.js` |
+| T4 | **Stack trace / error info leak** | Global Express error handlers in **all three services** return the unified `{ error, code, details }` envelope. `err.stack` is logged server-side only. | `pgErrorMap`, `mongoErrorMap`, gateway global handler |
+| T5 | **Unique constraint exposure** | Postgres `SQLSTATE 23505` is mapped to `409 conflict_unique_violation`; FK violation `23503` → `400 foreign_key_violation`. No raw `pg` error object is forwarded. | `pg-service/src/middleware/errorMiddleware.js` |
 | T6 | **Mongoose / Mongo error exposure** | `ValidationError` → 400, `CastError` → 400, duplicate key (11000) → 409, network errors → 503. The client never sees `err.errInfo` or driver internals. | `mongo-service/src/middleware/mongoErrorMiddleware.js` |
-| T7 | **Race condition / oversell** (CWE-362) | `SELECT … FOR UPDATE` locks **`variants`** rows inside a Prisma interactive checkout transaction so concurrent purchases serialize on SKU-level stock. | `pg-service/src/index.js` (`POST /checkout`) |
-| T8 | **Distributed state corruption** (CWE-460) | Saga Pattern. Failures in step 2 trigger compensating `DELETE` in step 1. Outcome is exposed via `X-Rollback-Status` response header. | `api-gateway/src/index.js` (`POST /api/products`) |
+| T7 | **Race condition / oversell** | `SELECT … FOR UPDATE` locks **`variants`** rows inside a Prisma interactive checkout transaction so concurrent purchases serialize on SKU-level stock. | `pg-service/src/index.js` (`POST /checkout`) |
+| T8 | **Distributed state corruption** | Saga Pattern. Failures in step 2 trigger compensating `DELETE` in step 1. Outcome is exposed via `X-Rollback-Status` response header. | `api-gateway/src/index.js` (`POST /api/products`) |
 | T9 | **Unhandled rejection / container crash** | `process.on('unhandledRejection', ...)` keeps the container alive and logs the reason instead of letting Node abort. | `pg-service/src/index.js` |
 
 ### Verifying the mitigations

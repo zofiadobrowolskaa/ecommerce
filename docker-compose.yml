@@ -1,68 +1,85 @@
+# docker compose configuration version
 version: '3.8'
 
 services:
+  # postgres database service
   postgres:
     image: postgres:15-alpine
+    # set database credentials and name from env variables
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # custom healthcheck using pg_isready tool
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    # expose port 5433 on host mapped to 5432 in container
     ports:
       - "5433:5432"
 
+  # mongodb database service
   mongodb:
     image: mongo:6
+    # set root credentials from env variables
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    # ping database to verify health status
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 10s
       timeout: 5s
       retries: 5
+    # expose standard mongodb port
     ports:
       - "27017:27017"
 
+  # inventory microservice using postgres
   pg-service:
     build: ./backend/inventory-order-service
     ports:
       - "${INVENTORY_SERVICE_PORT}:3001"
+    # inject database connection string
     environment:
       - PORT=3001
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-    # readiness probe: the service answers /health only after migrations have run
+    # readiness probe: answers /health only after migrations have run
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 20s
+    # wait for postgres to be healthy before starting
     depends_on:
       postgres:
         condition: service_healthy
 
+  # catalog microservice using mongodb
   mongo-service:
     build: ./backend/catalog-analytics-service
     ports:
       - "${CATALOG_SERVICE_PORT}:3002"
+    # inject mongodb connection uri
     environment:
       - PORT=3002
       - MONGO_URI=${MONGO_URI}
+    # healthcheck script checking the /health endpoint
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3002/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 15s
+    # wait for mongodb to be healthy before starting
     depends_on:
       mongodb:
         condition: service_healthy
 
+  # unified api gateway routing to microservices
   api-gateway:
     build: ./backend/api-gateway
     ports:
@@ -72,6 +89,7 @@ services:
       # service discovery via env so the gateway is decoupled from container names
       - INVENTORY_SERVICE_URL=http://pg-service:3001
       - CATALOG_SERVICE_URL=http://mongo-service:3002
+    # healthcheck script checking gateway readiness
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 5s
@@ -86,21 +104,27 @@ services:
         condition: service_healthy
 
   # one-shot seeder: runs after gateway is healthy, populates products, then exits
-  # ensures `docker compose up` requires zero manual steps
+  # ensures docker compose up requires zero manual steps
   seeder:
     build: ./backend/api-gateway
     command: ["node", "seed-products.js"]
+    # target gateway url for seeding requests
     environment:
       - SEED_GATEWAY_URL=http://api-gateway:3000
+    # execute only after gateway is fully functional
     depends_on:
       api-gateway:
         condition: service_healthy
+    # prevent container from restarting after successful exit
     restart: "no"
 
+  # react frontend application
   frontend:
     build: ./frontend
+    # map host port to vite dev server port 5173
     ports:
       - "${FRONTEND_PORT}:5173"
+    # wait for backend api gateway to be ready
     depends_on:
       api-gateway:
         condition: service_healthy

@@ -1,12 +1,12 @@
 const mongoose = require('mongoose');
 
-// nested sub-schema for product variants (array of subdocuments)
+// nested sub-schema for product variants
 const variantSchema = new mongoose.Schema({
   id: String,
   color: {
     type: String,
     required: true,
-    // custom validator: color name must be at least 2 characters
+    // validates that color name has at least 2 characters
     validate: {
       validator: (v) => typeof v === 'string' && v.trim().length >= 2,
       message: 'variant color must be at least 2 characters'
@@ -15,7 +15,7 @@ const variantSchema = new mongoose.Schema({
   priceAdjustment: {
     type: Number,
     default: 0,
-    // custom validator: price adjustment cannot be lower than -1000 (sanity floor)
+    // prevents price adjustment from dropping below -1000
     validate: {
       validator: (v) => v >= -1000,
       message: props => `price adjustment ${props.value} is unrealistic`
@@ -26,27 +26,29 @@ const variantSchema = new mongoose.Schema({
   stock: {
     type: Number,
     default: 0,
-    // custom validator: stock must be a non-negative integer
+    // ensures stock is a positive integer or zero
     validate: {
       validator: (v) => Number.isInteger(v) && v >= 0,
       message: props => `stock ${props.value} must be a non-negative integer`
     }
   },
   sku: String
-  // disables automatic creation of _id field for each variant subdocument
-}, { _id: false }); 
+}, { _id: false }); // disables automatic objectid generation for subdocuments
 
-// graded document shape:  numeric product key, flexible specs map, media gallery array
+// main schema for detailed product information
 const productDetailSchema = new mongoose.Schema({
+  // unique numeric identifier for the product
   productId: { type: Number, required: true, unique: true },
   longDescription: String,
   specs: { type: Map, of: String },
   gallery: [String],
+  // accepts any data type for material details
   aboutMaterials: mongoose.Schema.Types.Mixed,
-  // nested array of variant subdocuments with their own custom validators
+  
+  // array of variant subdocuments
   variants: {
     type: [variantSchema],
-    // custom array-level validator: all variant colors must be unique within a product
+    // ensures all variants within a product have unique colors
     validate: {
       validator: function(arr) {
         const colors = arr.map(v => v.color);
@@ -57,7 +59,7 @@ const productDetailSchema = new mongoose.Schema({
   }
 });
 
-// instance method: returns total stock summed across all variants
+// instance method calculating total stock across all variants
 productDetailSchema.methods.totalStock = function() {
   return (this.variants || []).reduce((sum, v) => sum + (v.stock || 0), 0);
 };

@@ -1,19 +1,16 @@
 const { Sequelize, DataTypes } = require('sequelize');
 
-// init sequelize connection (singleton)
+// sequelize instance - one connection shared across the app
 const sequelize = new Sequelize(process.env.DATABASE_URL || 'postgres://user:password@postgres:5432/ecommerce_db', {
-  logging: false
+  logging: false // disable sql query logging in the console
 });
 
-// cart model definition with explicit model-level validators
 const Cart = sequelize.define('Cart', {
   userId: {
     type: DataTypes.STRING,
     allowNull: false,
     validate: {
-      // built-in validator: rejects empty strings (allowNull only blocks null)
       notEmpty: { msg: 'userId cannot be empty' },
-      // length constraint to prevent abuse
       len: { args: [1, 100], msg: 'userId length must be 1-100 characters' }
     }
   },
@@ -21,7 +18,6 @@ const Cart = sequelize.define('Cart', {
     type: DataTypes.ENUM('OPEN', 'CLOSED'),
     defaultValue: 'OPEN',
     validate: {
-      // explicit whitelist on top of ENUM constraint
       isIn: { args: [['OPEN', 'CLOSED']], msg: 'status must be OPEN or CLOSED' }
     }
   },
@@ -29,23 +25,19 @@ const Cart = sequelize.define('Cart', {
     type: DataTypes.DECIMAL(10, 2),
     defaultValue: 0,
     validate: {
-      // financial integrity: total cannot be negative
       min: { args: [0], msg: 'totalPrice cannot be negative' }
     }
   }
 }, {
-  // domain hooks: business rules executed automatically on every persist
   hooks: {
-    // beforeValidate fires BEFORE validators, so we can sanitize bad input
-    // (clamp to 0) and let the min(0) validator then pass on the clean value
+    // domain hook on Cart: beforeValidate fires before validators run,
+    // prevents validation errors by safely resetting negative totals to 0
     beforeValidate: (cart) => {
-      // defensive coding: silently fix negative totals instead of crashing
       if (cart.totalPrice < 0) cart.totalPrice = 0;
     }
   }
 });
 
-// cart lines with explicit model-level validation
 const CartLine = sequelize.define('CartLine', {
   productId: {
     type: DataTypes.INTEGER,
@@ -55,10 +47,9 @@ const CartLine = sequelize.define('CartLine', {
       min: { args: [1], msg: 'productId must be positive' }
     }
   },
-  // optional saleable sku (variants.sku); null means "use default variant at checkout"
   variantSku: {
     type: DataTypes.STRING,
-    allowNull: true,
+    allowNull: true,  // null = no specific variant chosen, checkout picks default
     validate: {
       len: { args: [0, 255], msg: 'variantSku too long' }
     }
@@ -67,7 +58,6 @@ const CartLine = sequelize.define('CartLine', {
     type: DataTypes.INTEGER,
     allowNull: false,
     validate: {
-      // domain rule: cannot order zero or negative quantity
       min: { args: [1], msg: 'quantity must be at least 1' }
     }
   },
@@ -76,19 +66,17 @@ const CartLine = sequelize.define('CartLine', {
     allowNull: false,
     validate: {
       isDecimal: { msg: 'priceAtEntry must be a decimal' },
-      // financial rule: snapshot price cannot be negative
       min: { args: [0], msg: 'priceAtEntry cannot be negative' }
     }
   }
 });
 
-// 1:N relation between cart and lines, used by eager loading (include)
 Cart.hasMany(CartLine);
 CartLine.belongsTo(Cart);
 
-// domain hook: audit-log every cart line modification (useful for telemetry / debugging)
+// domain hook on CartLine: afterSave fires after every insert or update.
+// used as an audit trail - logs which cart and product were touched
 CartLine.addHook('afterSave', (line) => {
-  // fires on both insert and update; produces a deterministic audit trail in service logs
   console.log(`[domain_hook] cart_line_saved cart=${line.CartId} product=${line.productId} qty=${line.quantity}`);
 });
 
