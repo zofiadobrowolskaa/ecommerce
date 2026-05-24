@@ -35,8 +35,9 @@ export const AppProvider = ({ children }) => {
   // products fetched from the backend on mount
   const [products, setProducts] = useState([]);
 
-  // server-synced cart state
-  const [cart, setCart] = useState([]);
+  // cart persisted to localStorage so it survives page refresh
+  // server sync still runs after every change to keep backend in sync
+  const [cart, setCart] = useLocalStorage('cart', []);
 
   const [userRole, setUserRole] = useLocalStorage('userRole', 'client');
   const [discount, setDiscount] = useLocalStorage('discount', { code: '', percentage: 0 });

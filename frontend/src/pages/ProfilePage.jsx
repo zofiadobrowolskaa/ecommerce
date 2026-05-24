@@ -273,7 +273,8 @@ const ProfilePage = () => {
           
           {pagination.paginatedItems.map(order => (
             <div key={order.id} className="order-item">
-              <span className="order-id" data-label="ID">#{order.id.slice(-6)}</span>
+              {/* convert to string first — backend returns numeric id, slice is a string method */}
+              <span className="order-id" data-label="ID">#{String(order.id).slice(-6)}</span>
               <span className="order-date" data-label="Date">{new Date(order.date).toLocaleDateString()}</span>
               <span className="order-total" data-label="Total"><strong>${order.total.toFixed(2)}</strong></span>
               <span className={`order-status status-${order.status.toLowerCase()}`} data-label="Status">{order.status}</span>
