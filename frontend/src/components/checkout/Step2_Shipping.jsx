@@ -14,7 +14,7 @@ const Step2Schema = Yup.object().shape({
 
   city: Yup.string()
     .min(2, 'City name is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'City name cannot contain digits')
+    .matches(/^[\p{L}\s-]+$/u, 'City name cannot contain digits')
     .required('City is required'),
 
   postalCode: Yup.string()
@@ -23,7 +23,7 @@ const Step2Schema = Yup.object().shape({
 
   country: Yup.string()
     .min(3, 'Country name is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'Country name cannot contain digits')
+    .matches(/^[\p{L}\s-]+$/u, 'Country name cannot contain digits')
     .required('Country is required'),
 
   shippingMethod: Yup.string()

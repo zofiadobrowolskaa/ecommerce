@@ -19,11 +19,11 @@ const LoginSchema = Yup.object().shape({
 const RegisterSchema = Yup.object().shape({
   name: Yup.string()
     .min(2, 'Name is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'Name can only contain letters')
+    .matches(/^[\p{L}\s-]+$/u, 'Name can only contain letters')
     .required('Name is required'),
   surname: Yup.string()
     .min(2, 'Surname is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'Surname can only contain letters')
+    .matches(/^[\p{L}\s-]+$/u, 'Surname can only contain letters')
     .required('Surname is required'),
   email: Yup.string()
     .required('Email is required')

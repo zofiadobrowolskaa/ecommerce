@@ -6,7 +6,7 @@ import { validateEmail } from '../../utils/validationUtils';
 const Step1Schema = Yup.object().shape({
   name: Yup.string()
     .min(2, 'Name must be at least 2 characters')
-    .matches(/^[a-zA-Z\s-]+$/, 'Name can only contain letters')
+    .matches(/^[\p{L}\s-]+$/u, 'Name can only contain letters')
     .required('Name is required'),
 
   surname: Yup.string()
