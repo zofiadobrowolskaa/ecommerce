@@ -263,11 +263,38 @@ app.post('/internal/product-details', async (req, res) => {
   try {
     // create new product detail instance from request body
     const detail = new ProductDetail(req.body);
-    
+
     // save document to database triggering validators
     await detail.save();
-    
+
     res.status(201).json(detail);
+  } catch (error) {
+    sendError(res, 400, 'validation_error', error.message);
+  }
+});
+
+// updates existing product detail document or creates one if missing (upsert)
+app.put('/internal/product-details/:productId', async (req, res) => {
+  try {
+    const productId = Number(req.params.productId);
+    if (!Number.isFinite(productId)) {
+      return sendError(res, 400, 'invalid_id', 'productId must be numeric');
+    }
+    const { longDescription, specs, variants, aboutMaterials, gallery } = req.body;
+    const update = {};
+    if (longDescription !== undefined) update.longDescription = longDescription;
+    if (specs !== undefined) update.specs = specs;
+    if (variants !== undefined) update.variants = variants;
+    if (aboutMaterials !== undefined) update.aboutMaterials = aboutMaterials;
+    if (gallery !== undefined) update.gallery = gallery;
+
+    // upsert: update existing doc or create new one; skip mongoose validators for partial updates
+    const detail = await ProductDetail.findOneAndUpdate(
+      { productId },
+      { $set: update },
+      { new: true, upsert: true, runValidators: false }
+    );
+    res.json(detail);
   } catch (error) {
     sendError(res, 400, 'validation_error', error.message);
   }

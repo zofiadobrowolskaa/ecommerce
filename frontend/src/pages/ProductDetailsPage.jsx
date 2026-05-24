@@ -3,6 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAppContext } from '../context/AppContext';
 import RelatedProducts from '../components/RelatedProducts';
 import toast from 'react-hot-toast';
+// product service wraps the api client to avoid hardcoded urls
+import * as productsApi from '../api/products';
 import '../styles/pages/_productDetailsPage.scss';
 
 const ProductDetailsPage = () => {
@@ -18,34 +20,29 @@ const ProductDetailsPage = () => {
   const [quantity, setQuantity] = useState(1);
   const [selectedSize, setSelectedSize] = useState(null);
 
-  // fetch single product details from api gateway
+  // fetch single product details from the api gateway via the products service module
   useEffect(() => {
     let isMounted = true;
 
     const fetchProductDetails = async () => {
       try {
         setLoading(true);
-        setProduct(null); // NAPRAWA 1: Natychmiastowe czyszczenie starego produktu
-        
-        const response = await fetch(`http://localhost:3000/api/products/${id}`);
-        
-        if (!response.ok) {
-           if (response.status === 404) throw new Error("product not found");
-           throw new Error("Failed to fetch product details");
-        }
-        
-        const data = await response.json();
-        if (isMounted) setProduct(data);
+        // clear stale product immediately to avoid showing wrong data during navigation
+        setProduct(null);
+
+        const response = await productsApi.getProductById(id);
+        if (isMounted) setProduct(response.data);
       } catch (err) {
-        if (isMounted) setError(err.message);
+        // axios throws on non-2xx; check status to give a friendlier 404 message
+        if (isMounted) {
+          setError(err.response?.status === 404 ? 'product not found' : err.message);
+        }
       } finally {
         if (isMounted) setLoading(false);
       }
     };
 
-    if (id) {
-       fetchProductDetails();
-    }
+    if (id) fetchProductDetails();
 
     return () => { isMounted = false; };
   }, [id]);

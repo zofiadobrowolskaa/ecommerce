@@ -10,7 +10,8 @@ const app = express();
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  // PATCH added to support price update endpoint
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -145,6 +146,54 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
         rollbackStatus
       }
     );
+  }
+});
+
+// update product across both databases using hybrid saga (no rollback needed - partial updates are acceptable)
+app.put('/api/products/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return sendError(res, 400, 'invalid_id', 'id must be numeric');
+
+  const { name, price, category_id, sku, long_description, specs, variants, aboutMaterials, gallery } = req.body;
+
+  try {
+    // step 1: update base product fields in postgres
+    await axios.patch(`${INVENTORY_SERVICE}/internal/products/${id}`, {
+      name,
+      category_id: Number(category_id),
+      price: Number(price)
+    });
+
+    // step 2: re-sync inventory variants in postgres while preserving existing stock values
+    if (Array.isArray(variants) && variants.length > 0 && sku) {
+      // fetch current inventory variants to read their existing stock counts
+      const existingRes = await axios.get(`${INVENTORY_SERVICE}/products/${id}/variants`).catch(() => ({ data: [] }));
+      const stockBySku = {};
+      (existingRes.data || []).forEach(v => { stockBySku[v.sku] = v.stock; });
+
+      const variantRows = variants.map((v) => {
+        const variantSku = `${sku}__${String(v.id)}`;
+        return {
+          sku: variantSku,
+          price: Number(price) + Number(v.priceAdjustment || 0),
+          stock: stockBySku[variantSku] ?? 0, // preserve current stock or default to 0 for new variants
+          label: v.color ? String(v.color) : String(v.id)
+        };
+      });
+
+      await axios.post(`${INVENTORY_SERVICE}/internal/products/${id}/variants`, { variants: variantRows });
+    }
+
+    // step 3: update extended catalog data in mongodb
+    // specs and gallery are not editable from the product form, so only update them if explicitly provided
+    const catalogPayload = { longDescription: long_description, variants, aboutMaterials };
+    if (specs && Object.keys(specs).length > 0) catalogPayload.specs = specs;
+    if (Array.isArray(gallery) && gallery.length > 0) catalogPayload.gallery = gallery;
+    await axios.put(`${CATALOG_SERVICE}/internal/product-details/${id}`, catalogPayload);
+
+    res.json({ id, message: 'product updated in both databases' });
+  } catch (e) {
+    handleError(res, e, 'product_update_failed');
   }
 });
 
@@ -428,6 +477,21 @@ app.get('/api/products/:id', async (req, res) => {
   } catch (error) {
     console.error('product_aggregation_failed', error.message);
     sendError(res, 500, 'internal_server_error', error.message);
+  }
+});
+
+// delete a product from postgres (required) and mongodb (best-effort)
+// uses the same internal inventory route as the saga rollback compensation
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    await axios.delete(`${INVENTORY_SERVICE}/internal/products/${req.params.id}`);
+
+    // silently ignore catalog delete failure — product detail data is orphaned but not critical
+    await axios.delete(`${CATALOG_SERVICE}/internal/product-details/${req.params.id}`).catch(() => {});
+
+    res.sendStatus(204);
+  } catch (e) {
+    handleError(res, e, 'product_delete_failed');
   }
 });
 

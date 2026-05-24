@@ -2,6 +2,7 @@ import React from 'react';
 import { Routes, Route, Link, Navigate } from 'react-router-dom';
 import DashboardPage from '../../pages/DashboardPage';
 import ProductManagementPage from '../../pages/ProductManagementPage';
+import ScrollToTop from '../ScrollToTop';
 import '../../styles/pages/_layout.scss';
 
 const AdminLayout = () => {
@@ -17,6 +18,9 @@ const AdminLayout = () => {
           </Link>
         </nav>
       </header>
+
+      {/* fires window.scrollTo(0,0) on every route change */}
+      <ScrollToTop />
 
       <main className="admin-main">
         {/* admin routing configuration */}

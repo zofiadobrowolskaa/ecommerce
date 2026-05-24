@@ -9,9 +9,12 @@ import '../styles/pages/_productManagement.scss';
 
 const VIEW = {
     LIST: 'LIST',
-    EDIT: 'EDIT',
-    CREATE: 'CREATE'
+    CREATE: 'CREATE',
+    EDIT: 'EDIT'
 };
+
+// maps numeric category id from backend to display name for the form
+const CATEGORY_ID_TO_NAME = { 1: 'Rings', 2: 'Earrings', 3: 'Necklaces', 4: 'Bracelets' };
 
 const ProductManagementPage = () => {
     const { products, deleteProduct, resetAppData } = useAppContext();
@@ -24,22 +27,31 @@ const ProductManagementPage = () => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }, [currentView]);
 
-    // open the editor for a selected product
-    const handleEditClick = (product) => {
-        setSelectedProduct(product);
-        setCurrentView(VIEW.EDIT);
-    };
-
     // switch to create product view
-    const handleCreateClick = () => {
+    const handleCreateClick = () => setCurrentView(VIEW.CREATE);
+
+    // return to product list and clear selected product
+    const handleBackToList = () => {
+        setCurrentView(VIEW.LIST);
         setSelectedProduct(null);
-        setCurrentView(VIEW.CREATE);
     };
 
-    // return to product list
-    const handleBackToList = () => {
-        setSelectedProduct(null);
-        setCurrentView(VIEW.LIST);
+    // map backend product shape to form initialData shape and switch to edit view
+    const handleEditClick = (product) => {
+        setSelectedProduct({
+            _id: product.id,
+            id: product.sku,
+            name: product.name,
+            category: CATEGORY_ID_TO_NAME[product.category_id] || '',
+            price: product.price,
+            description: product.description || '',
+            variants: product.variants || [],
+            aboutMaterials: product.aboutMaterials || {},
+            gallery: product.gallery || [],
+            tags: Array.isArray(product.tags) ? product.tags : [],
+            rating: product.rating || 4.5,
+        });
+        setCurrentView(VIEW.EDIT);
     };
 
     const handleDeleteProduct = async (id, name) => {
@@ -48,8 +60,13 @@ const ProductManagementPage = () => {
             `Are you sure you want to delete product "${name}" and ALL its variants?`
         );
         if (confirmed) {
-            deleteProduct(id);
-            toast.success("Product deleted successfully");
+            try {
+                // deleteProduct calls DELETE /api/products/:id and updates local state on success
+                await deleteProduct(id);
+                toast.success("Product deleted successfully");
+            } catch {
+                toast.error("Failed to delete product. Please try again.");
+            }
         }
     };
 
@@ -65,18 +82,38 @@ const ProductManagementPage = () => {
         }
     };
 
-    // render editor view (EDIT or CREATE)
-    if (currentView === VIEW.EDIT || currentView === VIEW.CREATE) {
+    // render create product form view
+    if (currentView === VIEW.CREATE) {
         return (
             <div className="product-management-page">
                 <div className="editor-header">
                     <button onClick={handleBackToList} className="btn-back">
                         &larr; Back to List
                     </button>
-                    <h1>{currentView === VIEW.CREATE ? 'Create New Product' : `Edit: ${selectedProduct?.name}`}</h1>
+                    <h1>Create New Product</h1>
                 </div>
-                
-                <ProductForm 
+
+                <ProductForm
+                    initialData={null}
+                    onSuccess={handleBackToList}
+                    onCancel={handleBackToList}
+                />
+            </div>
+        );
+    }
+
+    // render edit product form view
+    if (currentView === VIEW.EDIT && selectedProduct) {
+        return (
+            <div className="product-management-page">
+                <div className="editor-header">
+                    <button onClick={handleBackToList} className="btn-back">
+                        &larr; Back to List
+                    </button>
+                    <h1>Edit Product</h1>
+                </div>
+
+                <ProductForm
                     initialData={selectedProduct}
                     onSuccess={handleBackToList}
                     onCancel={handleBackToList}
@@ -112,16 +149,15 @@ const ProductManagementPage = () => {
 
                 {pagination.paginatedItems.map(product => {
                     const variantCount = product.variants?.length || 0;
-                    const prices = product.variants?.map(v => product.price + (v.priceAdjustment || 0)) || [product.price];
-                    const minPrice = Math.min(...prices);
-                    const maxPrice = Math.max(...prices);
-                    const priceDisplay = minPrice === maxPrice 
-                        ? `$${minPrice.toFixed(2)}` 
-                        : `$${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)}`;
+                    // use min_price / max_price from inventory service (accurate postgres data)
+                    const minPrice = Number(product.min_price ?? product.price) || 0;
+                    const maxPrice = Number(product.max_price ?? product.price) || 0;
+                    const priceDisplay = minPrice !== maxPrice
+                        ? `$${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)}`
+                        : `$${minPrice.toFixed(2)}`;
 
                     const mainImg = product.variants?.[0]?.imageUrl || '/img/placeholder.jpg';
-                    
-                    // ZMODYFIKOWANE: Odtwarzamy tekst z liczby
+
                     const categoryDict = { 1: "Rings", 2: "Earrings", 3: "Necklaces", 4: "Bracelets" };
                     const categoryName = categoryDict[product.category_id] || product.category || 'Unknown';
 
@@ -142,13 +178,13 @@ const ProductManagementPage = () => {
                             
                             <div className="actions">
                                 <button
-                                    onClick={() => toast.error("Editing disabled in server-mode.")} 
+                                    onClick={() => handleEditClick(product)}
                                     className="btn-edit"
                                 >
                                     Edit
                                 </button>
-                                <button 
-                                    onClick={() => handleDeleteProduct(product.id, product.name)} 
+                                <button
+                                    onClick={() => handleDeleteProduct(product.id, product.name)}
                                     className="btn-delete"
                                 >
                                     Delete

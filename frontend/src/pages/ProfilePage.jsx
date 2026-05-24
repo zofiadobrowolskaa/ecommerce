@@ -12,11 +12,11 @@ import { validateEmail } from '../utils/validationUtils';
 const ProfileSchema = Yup.object().shape({
   name: Yup.string()
     .min(2, 'Name is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'Name can only contain letters'),
-    
+    .matches(/^[\p{L}\s-]+$/u, 'Name can only contain letters'),
+
   surname: Yup.string()
     .min(2, 'Surname is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'Surname can only contain letters'),
+    .matches(/^[\p{L}\s-]+$/u, 'Surname can only contain letters'),
     
   email: Yup.string()
     .test('valid-email', 'Please enter a valid email address (e.g. user@domain.com)', validateEmail),
@@ -33,14 +33,14 @@ const ProfileSchema = Yup.object().shape({
   
   city: Yup.string()
     .min(2, 'City name is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'City name cannot contain digits'),
-    
+    .matches(/^[\p{L}\s-]+$/u, 'City name cannot contain digits'),
+
   postalCode: Yup.string()
     .matches(/^\d{2}-\d{3}$/, 'Postal code must follow format XX-XXX (e.g. 00-001)'),
-    
+
   country: Yup.string()
     .min(3, 'Country name is too short')
-    .matches(/^[a-zA-Z\s-]+$/, 'Country name cannot contain digits'),
+    .matches(/^[\p{L}\s-]+$/u, 'Country name cannot contain digits'),
 });
 
 const ProfilePage = () => {
@@ -273,7 +273,7 @@ const ProfilePage = () => {
           
           {pagination.paginatedItems.map(order => (
             <div key={order.id} className="order-item">
-              <span className="order-id" data-label="ID">#{order.id.slice(-6)}</span>
+              <span className="order-id" data-label="ID">#ORD-{String(order.id).padStart(4, '0')}</span>
               <span className="order-date" data-label="Date">{new Date(order.date).toLocaleDateString()}</span>
               <span className="order-total" data-label="Total"><strong>${order.total.toFixed(2)}</strong></span>
               <span className={`order-status status-${order.status.toLowerCase()}`} data-label="Status">{order.status}</span>

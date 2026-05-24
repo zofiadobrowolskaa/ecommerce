@@ -23,7 +23,7 @@ const EditorVariantSchema = Yup.object().shape({
     priceAdjustment: Yup.number()
         .min(0, 'Price adjustment cannot be negative')
         .required('Price adjustment is required'),
-    size: Yup.string().required('Sizes are required (e.g. S, M, L)'),
+    size: Yup.string(),
     imageUrl: Yup.string()
         .required('Image path is required')
 });
@@ -88,13 +88,15 @@ const ProductForm = ({ initialData, onSuccess, onCancel }) => {
                 return;
             }
 
-            // format variant data
+            // format variant data; size is optional (e.g. earrings have no size)
             const formattedVariant = {
                 ...newVariant,
                 priceAdjustment: Number(newVariant.priceAdjustment),
-                size: newVariant.size.includes(',') 
-                    ? newVariant.size.split(',').map(s => s.trim()).filter(Boolean) 
-                    : [newVariant.size.trim()]
+                size: newVariant.size
+                    ? (newVariant.size.includes(',')
+                        ? newVariant.size.split(',').map(s => s.trim()).filter(Boolean)
+                        : [newVariant.size.trim()])
+                    : []
             };
 
             // add or update variant
@@ -137,10 +139,11 @@ const ProductForm = ({ initialData, onSuccess, onCancel }) => {
         });
     };
 
-    // submit product form
-    const handleSubmit = (values, { setSubmitting }) => {
+    // submit product form — async to await backend api calls
+    const handleSubmit = async (values, { setSubmitting }) => {
         if (!isEditing) {
-            const exists = products.find(p => p.id === values.id);
+            // check for duplicate sku before creating
+            const exists = products.find(p => p.sku === values.id || p.id === values.id);
             if (exists) {
                 toast.error(`Product ID ${values.id} already exists!`);
                 setSubmitting(false);
@@ -150,6 +153,7 @@ const ProductForm = ({ initialData, onSuccess, onCancel }) => {
 
         const productPayload = {
             ...values,
+            _id: initialData?._id,  // numeric postgres id passed through for update calls
             price: Number(values.price),
             rating: Number(values.rating),
             tags: values.tags.split(',').map(t => t.trim()).filter(Boolean),
@@ -157,15 +161,20 @@ const ProductForm = ({ initialData, onSuccess, onCancel }) => {
         };
         delete productPayload.editorVariant;
 
-        if (isEditing) {
-            updateProduct(productPayload);
-            toast.success("Product updated successfully");
-        } else {
-            addProduct(productPayload);
-            toast.success("Product created successfully");
+        try {
+            if (isEditing) {
+                await updateProduct(productPayload);
+                toast.success("Product updated successfully");
+            } else {
+                await addProduct(productPayload);
+                toast.success("Product created successfully");
+            }
+            onSuccess();
+        } catch {
+            toast.error(isEditing ? "Failed to update product. Please try again." : "Failed to create product. Please try again.");
+        } finally {
+            setSubmitting(false);
         }
-
-        onSuccess();
     };
 
     return (

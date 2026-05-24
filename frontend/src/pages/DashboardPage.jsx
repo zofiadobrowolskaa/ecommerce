@@ -274,7 +274,7 @@ const DashboardPage = () => {
               
               {pagination.paginatedItems.map(order => (
                 <div key={order.id} className="order-item">
-                  <span className="order-id" data-label="ID">#{order.id.slice(-6)}</span>
+                  <span className="order-id" data-label="ID">#ORD-{String(order.id).padStart(4, '0')}</span>
                   <span className="customer-email" data-label="Customer">{order.details?.email}</span>
                   <span className="order-date" data-label="Date">
                       {new Date(order.date).toLocaleDateString()}
