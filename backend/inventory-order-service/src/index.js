@@ -62,6 +62,7 @@ app.get('/products/:productId/variants', async (req, res, next) => {
 });
 
 // fetch products with dynamic filters (category, price, stock)
+// includes min_price and max_price computed from inventory variants via a single left join
 app.get('/products', async (req, res, next) => {
   try {
     const { category, minPrice, maxPrice, inStock } = req.query;
@@ -85,14 +86,19 @@ app.get('/products', async (req, res, next) => {
     // parse boolean flag to check if only available products should be returned
     const onlyInStock = inStock === 'true' || inStock === '1';
 
-    // build dynamic sql query using knex (prevents sql injection)
-    const query = knex('products').where(builder => {
-      // append where clauses dynamically only if the filter is provided
-      if (categoryId !== undefined) builder.where('category_id', categoryId);
-      if (minPriceNum !== undefined) builder.where('price', '>=', minPriceNum);
-      if (maxPriceNum !== undefined) builder.where('price', '<=', maxPriceNum);
-      if (onlyInStock) builder.where('stock', '>', 0);
-    });
+    // left join with variants to compute actual min/max prices in a single query
+    const query = knex('products as p')
+      .leftJoin('variants as v', 'v.product_id', 'p.id')
+      .select('p.*')
+      .min('v.price as min_price')
+      .max('v.price as max_price')
+      .groupBy('p.id')
+      .where(builder => {
+        if (categoryId !== undefined) builder.where('p.category_id', categoryId);
+        if (minPriceNum !== undefined) builder.where('p.price', '>=', minPriceNum);
+        if (maxPriceNum !== undefined) builder.where('p.price', '<=', maxPriceNum);
+        if (onlyInStock) builder.where('p.stock', '>', 0);
+      });
     const products = await query;
     res.json(products);
   } catch (err) {
@@ -208,6 +214,29 @@ app.delete('/internal/products/:id', async (req, res, next) => {
   } catch (err) {
     // forwards unhandled promise errors to global handler
     next(err);
+  }
+});
+
+// updates editable base product fields (name, category, price) without touching stock or variants
+app.patch('/internal/products/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return sendError(res, 400, 'invalid_id', 'id must be numeric');
+    
+    const { name, category_id, price } = req.body;
+    const updates = {};
+
+    if (name !== undefined) updates.name = name;
+    if (category_id !== undefined) updates.category_id = Number(category_id);
+    if (price !== undefined) updates.price = Number(price);
+    if (!Object.keys(updates).length) return sendError(res, 400, 'no_fields', 'at least one field is required');
+
+    const updated = await knex('products').where({ id }).update(updates).returning('*');
+    if (!updated.length) return sendError(res, 404, 'not_found', `product ${id} not found`);
+
+    res.json(updated[0]);
+  } catch (err) { 
+    next(err); 
   }
 });
 

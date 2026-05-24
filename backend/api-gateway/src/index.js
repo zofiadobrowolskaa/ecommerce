@@ -149,6 +149,56 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
   }
 });
 
+// update product across both databases using hybrid saga (no rollback needed - partial updates are acceptable)
+app.put('/api/products/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return sendError(res, 400, 'invalid_id', 'id must be numeric');
+
+  const { name, price, category_id, sku, long_description, specs, variants, aboutMaterials, gallery } = req.body;
+
+  try {
+    // step 1: update base product fields in postgres
+    await axios.patch(`${INVENTORY_SERVICE}/internal/products/${id}`, {
+      name,
+      category_id: Number(category_id),
+      price: Number(price)
+    });
+
+    // step 2: re-sync inventory variants in postgres while preserving existing stock values
+    if (Array.isArray(variants) && variants.length > 0 && sku) {
+      // fetch current inventory variants to read their existing stock counts
+      const existingRes = await axios.get(`${INVENTORY_SERVICE}/products/${id}/variants`).catch(() => ({ data: [] }));
+      const stockBySku = {};
+      (existingRes.data || []).forEach(v => { stockBySku[v.sku] = v.stock; });
+
+      const variantRows = variants.map((v) => {
+        const variantSku = `${sku}__${String(v.id)}`;
+        return {
+          sku: variantSku,
+          price: Number(price) + Number(v.priceAdjustment || 0),
+          stock: stockBySku[variantSku] ?? 0, // preserve current stock or default to 0 for new variants
+          label: v.color ? String(v.color) : String(v.id)
+        };
+      });
+
+      await axios.post(`${INVENTORY_SERVICE}/internal/products/${id}/variants`, { variants: variantRows });
+    }
+
+    // step 3: update extended catalog data in mongodb
+    await axios.put(`${CATALOG_SERVICE}/internal/product-details/${id}`, {
+      longDescription: long_description,
+      specs,
+      variants,
+      aboutMaterials,
+      gallery
+    });
+
+    res.json({ id, message: 'product updated in both databases' });
+  } catch (e) {
+    handleError(res, e, 'product_update_failed');
+  }
+});
+
 // list product categories
 app.get('/api/categories', async (req, res) => {
   try {
