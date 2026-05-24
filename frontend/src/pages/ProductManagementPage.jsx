@@ -9,12 +9,17 @@ import '../styles/pages/_productManagement.scss';
 
 const VIEW = {
     LIST: 'LIST',
-    CREATE: 'CREATE'
+    CREATE: 'CREATE',
+    EDIT: 'EDIT'
 };
+
+// maps numeric category id from backend to display name for the form
+const CATEGORY_ID_TO_NAME = { 1: 'Rings', 2: 'Earrings', 3: 'Necklaces', 4: 'Bracelets' };
 
 const ProductManagementPage = () => {
     const { products, deleteProduct, resetAppData } = useAppContext();
     const [currentView, setCurrentView] = useState(VIEW.LIST);
+    const [selectedProduct, setSelectedProduct] = useState(null);
 
     const pagination = usePagination(products, 10, { paramName: 'adminPage' });
 
@@ -25,8 +30,29 @@ const ProductManagementPage = () => {
     // switch to create product view
     const handleCreateClick = () => setCurrentView(VIEW.CREATE);
 
-    // return to product list
-    const handleBackToList = () => setCurrentView(VIEW.LIST);
+    // return to product list and clear selected product
+    const handleBackToList = () => {
+        setCurrentView(VIEW.LIST);
+        setSelectedProduct(null);
+    };
+
+    // map backend product shape to form initialData shape and switch to edit view
+    const handleEditClick = (product) => {
+        setSelectedProduct({
+            _id: product.id,
+            id: product.sku,
+            name: product.name,
+            category: CATEGORY_ID_TO_NAME[product.category_id] || '',
+            price: product.price,
+            description: product.description || '',
+            variants: product.variants || [],
+            aboutMaterials: product.aboutMaterials || {},
+            gallery: product.gallery || [],
+            tags: Array.isArray(product.tags) ? product.tags : [],
+            rating: product.rating || 4.5,
+        });
+        setCurrentView(VIEW.EDIT);
+    };
 
     const handleDeleteProduct = async (id, name) => {
         const confirmed = await confirmDialog.show(
@@ -66,9 +92,29 @@ const ProductManagementPage = () => {
                     </button>
                     <h1>Create New Product</h1>
                 </div>
-                
-                <ProductForm 
+
+                <ProductForm
                     initialData={null}
+                    onSuccess={handleBackToList}
+                    onCancel={handleBackToList}
+                />
+            </div>
+        );
+    }
+
+    // render edit product form view
+    if (currentView === VIEW.EDIT && selectedProduct) {
+        return (
+            <div className="product-management-page">
+                <div className="editor-header">
+                    <button onClick={handleBackToList} className="btn-back">
+                        &larr; Back to List
+                    </button>
+                    <h1>Edit Product</h1>
+                </div>
+
+                <ProductForm
+                    initialData={selectedProduct}
                     onSuccess={handleBackToList}
                     onCancel={handleBackToList}
                 />
@@ -103,16 +149,15 @@ const ProductManagementPage = () => {
 
                 {pagination.paginatedItems.map(product => {
                     const variantCount = product.variants?.length || 0;
-                    const prices = product.variants?.map(v => product.price + (v.priceAdjustment || 0)) || [product.price];
-                    const minPrice = Math.min(...prices);
-                    const maxPrice = Math.max(...prices);
-                    const priceDisplay = minPrice === maxPrice 
-                        ? `$${minPrice.toFixed(2)}` 
-                        : `$${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)}`;
+                    // use min_price / max_price from inventory service (accurate postgres data)
+                    const minPrice = Number(product.min_price ?? product.price) || 0;
+                    const maxPrice = Number(product.max_price ?? product.price) || 0;
+                    const priceDisplay = minPrice !== maxPrice
+                        ? `$${minPrice.toFixed(2)} - $${maxPrice.toFixed(2)}`
+                        : `$${minPrice.toFixed(2)}`;
 
                     const mainImg = product.variants?.[0]?.imageUrl || '/img/placeholder.jpg';
-                    
-                    // ZMODYFIKOWANE: Odtwarzamy tekst z liczby
+
                     const categoryDict = { 1: "Rings", 2: "Earrings", 3: "Necklaces", 4: "Bracelets" };
                     const categoryName = categoryDict[product.category_id] || product.category || 'Unknown';
 
@@ -132,6 +177,12 @@ const ProductManagementPage = () => {
                             <span className="price">{priceDisplay}</span>
                             
                             <div className="actions">
+                                <button
+                                    onClick={() => handleEditClick(product)}
+                                    className="btn-edit"
+                                >
+                                    Edit
+                                </button>
                                 <button
                                     onClick={() => handleDeleteProduct(product.id, product.name)}
                                     className="btn-delete"

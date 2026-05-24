@@ -23,7 +23,9 @@ const ProductListPage = () => {
       try {
         setLoading(true);
         const response = await productsApi.getProducts();
-        setProducts(response.data);
+        // sort by numeric id so order is stable and matches the admin dashboard
+        const sorted = [...response.data].sort((a, b) => a.id - b.id);
+        setProducts(sorted);
       } catch (err) {
         // axios stores the friendly message in err.message
         setError(err.message);

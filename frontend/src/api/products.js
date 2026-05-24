@@ -14,3 +14,6 @@ export const createProduct = (data) => api.post('/api/products', data);
 
 // delete a product from both databases by its numeric id
 export const deleteProduct = (id) => api.delete(`/api/products/${id}`);
+
+// update an existing product across both databases by its numeric id
+export const updateProduct = (id, data) => api.put(`/api/products/${id}`, data);

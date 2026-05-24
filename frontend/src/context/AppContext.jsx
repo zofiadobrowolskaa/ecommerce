@@ -7,6 +7,21 @@ import * as productsApi from '../api/products';
 
 export const AppContext = createContext();
 
+const CATEGORY_NAME_TO_ID = { Rings: 1, Earrings: 2, Necklaces: 3, Bracelets: 4 };
+
+// converts frontend form values into the payload shape expected by the api gateway
+const toApiPayload = (formValues) => ({
+  name: formValues.name,
+  sku: formValues.id,
+  price: Number(formValues.price),
+  category_id: CATEGORY_NAME_TO_ID[formValues.category] || 1,
+  long_description: formValues.description,
+  specs: formValues.specs || {},
+  variants: formValues.variants || [],
+  aboutMaterials: formValues.aboutMaterials || {},
+  gallery: formValues.gallery || [],
+});
+
 // helper to calculate total value of items in the cart
 const calculateCartTotal = (currentCart, products) => {
   return currentCart.reduce((total, item) => {
@@ -60,18 +75,22 @@ export const AppProvider = ({ children }) => {
     return guestId;
   }, [user]);
 
+  // re-fetches the full product list from the api gateway and updates local state
+  // sorts by id so position in the list is stable and does not change after edits
+  const refreshProducts = useCallback(async () => {
+    try {
+      const response = await productsApi.getProducts();
+      const sorted = [...response.data].sort((a, b) => a.id - b.id);
+      setProducts(sorted);
+    } catch (error) {
+      console.error('failed to fetch products', error);
+    }
+  }, []);
+
   // fetch all products from the api gateway on mount
   useEffect(() => {
-    const fetchGlobalProducts = async () => {
-      try {
-        const response = await productsApi.getProducts();
-        setProducts(response.data);
-      } catch (error) {
-        console.error('failed to fetch products for context', error);
-      }
-    };
-    fetchGlobalProducts();
-  }, []);
+    refreshProducts();
+  }, [refreshProducts]);
 
   // initialize authentication state from the stored token
   useEffect(() => {
@@ -249,10 +268,18 @@ export const AppProvider = ({ children }) => {
     }
   }, [user]);
 
-  const addProduct = useCallback((newProduct) => setProducts(prev => [newProduct, ...prev]), []);
+  // creates a new product via the backend saga then refreshes the product list
+  const addProduct = useCallback(async (newProduct) => {
+    await productsApi.createProduct(toApiPayload(newProduct));
+    await refreshProducts();
+  }, [refreshProducts]);
 
-  const updateProduct = useCallback((updatedProduct) =>
-    setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p)), []);
+  // updates an existing product via the backend saga then refreshes the product list
+  // expects updatedProduct._id to be the numeric postgres id of the product
+  const updateProduct = useCallback(async (updatedProduct) => {
+    await productsApi.updateProduct(updatedProduct._id, toApiPayload(updatedProduct));
+    await refreshProducts();
+  }, [refreshProducts]);
 
   // delete product from the backend then remove it from local state
   const deleteProduct = useCallback(async (id) => {
@@ -275,7 +302,7 @@ export const AppProvider = ({ children }) => {
     orders, placeOrder, removeOrder,
     login, logout, register, user,
     profile, updateProfile,
-    addProduct, updateProduct, deleteProduct,
+    addProduct, updateProduct, deleteProduct, refreshProducts,
     resetAppData,
     getUserId,
   };
