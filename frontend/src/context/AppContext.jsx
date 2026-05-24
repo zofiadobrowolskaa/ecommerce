@@ -130,7 +130,11 @@ export const AppProvider = ({ children }) => {
       const variant = product?.variants?.find(v => v.id === item.variantId);
       // sum base price and variant adjustment for each line
       const price = (Number(product?.price) || 0) + (Number(variant?.priceAdjustment) || 0);
-      return { productId: item.productId, quantity: item.quantity, price };
+      // reconstruct the inventory variant sku so checkout deducts from the correct variant row
+      const sku = product?.sku && item.variantId
+        ? `${product.sku}__${item.variantId}`
+        : null;
+      return { productId: item.productId, quantity: item.quantity, price, sku };
     });
   }, [products]);
 

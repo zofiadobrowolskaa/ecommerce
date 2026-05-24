@@ -185,13 +185,11 @@ app.put('/api/products/:id', async (req, res) => {
     }
 
     // step 3: update extended catalog data in mongodb
-    await axios.put(`${CATALOG_SERVICE}/internal/product-details/${id}`, {
-      longDescription: long_description,
-      specs,
-      variants,
-      aboutMaterials,
-      gallery
-    });
+    // specs and gallery are not editable from the product form, so only update them if explicitly provided
+    const catalogPayload = { longDescription: long_description, variants, aboutMaterials };
+    if (specs && Object.keys(specs).length > 0) catalogPayload.specs = specs;
+    if (Array.isArray(gallery) && gallery.length > 0) catalogPayload.gallery = gallery;
+    await axios.put(`${CATALOG_SERVICE}/internal/product-details/${id}`, catalogPayload);
 
     res.json({ id, message: 'product updated in both databases' });
   } catch (e) {
