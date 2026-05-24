@@ -48,8 +48,13 @@ const ProductManagementPage = () => {
             `Are you sure you want to delete product "${name}" and ALL its variants?`
         );
         if (confirmed) {
-            deleteProduct(id);
-            toast.success("Product deleted successfully");
+            try {
+                // deleteProduct calls DELETE /api/products/:id and updates local state on success
+                await deleteProduct(id);
+                toast.success("Product deleted successfully");
+            } catch {
+                toast.error("Failed to delete product. Please try again.");
+            }
         }
     };
 

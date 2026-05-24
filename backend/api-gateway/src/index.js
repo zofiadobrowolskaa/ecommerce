@@ -10,7 +10,8 @@ const app = express();
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  // PATCH added to support price update endpoint
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
@@ -428,6 +429,21 @@ app.get('/api/products/:id', async (req, res) => {
   } catch (error) {
     console.error('product_aggregation_failed', error.message);
     sendError(res, 500, 'internal_server_error', error.message);
+  }
+});
+
+// delete a product from postgres (required) and mongodb (best-effort)
+// uses the same internal inventory route as the saga rollback compensation
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    await axios.delete(`${INVENTORY_SERVICE}/internal/products/${req.params.id}`);
+
+    // silently ignore catalog delete failure — product detail data is orphaned but not critical
+    await axios.delete(`${CATALOG_SERVICE}/internal/product-details/${req.params.id}`).catch(() => {});
+
+    res.sendStatus(204);
+  } catch (e) {
+    handleError(res, e, 'product_delete_failed');
   }
 });
 
