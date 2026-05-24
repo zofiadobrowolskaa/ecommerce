@@ -11,8 +11,9 @@
 
   .content-wrapper {
     display: flex;
+    align-items: flex-start;
     gap: $spacing-unit * 2;
-    
+
     @media (max-width: 1024px) {
       flex-direction: column;
     }

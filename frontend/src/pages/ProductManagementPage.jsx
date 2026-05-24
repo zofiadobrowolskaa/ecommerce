@@ -9,14 +9,12 @@ import '../styles/pages/_productManagement.scss';
 
 const VIEW = {
     LIST: 'LIST',
-    EDIT: 'EDIT',
     CREATE: 'CREATE'
 };
 
 const ProductManagementPage = () => {
     const { products, deleteProduct, resetAppData } = useAppContext();
     const [currentView, setCurrentView] = useState(VIEW.LIST);
-    const [selectedProduct, setSelectedProduct] = useState(null);
 
     const pagination = usePagination(products, 10, { paramName: 'adminPage' });
 
@@ -24,23 +22,11 @@ const ProductManagementPage = () => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }, [currentView]);
 
-    // open the editor for a selected product
-    const handleEditClick = (product) => {
-        setSelectedProduct(product);
-        setCurrentView(VIEW.EDIT);
-    };
-
     // switch to create product view
-    const handleCreateClick = () => {
-        setSelectedProduct(null);
-        setCurrentView(VIEW.CREATE);
-    };
+    const handleCreateClick = () => setCurrentView(VIEW.CREATE);
 
     // return to product list
-    const handleBackToList = () => {
-        setSelectedProduct(null);
-        setCurrentView(VIEW.LIST);
-    };
+    const handleBackToList = () => setCurrentView(VIEW.LIST);
 
     const handleDeleteProduct = async (id, name) => {
         const confirmed = await confirmDialog.show(
@@ -70,19 +56,19 @@ const ProductManagementPage = () => {
         }
     };
 
-    // render editor view (EDIT or CREATE)
-    if (currentView === VIEW.EDIT || currentView === VIEW.CREATE) {
+    // render create product form view
+    if (currentView === VIEW.CREATE) {
         return (
             <div className="product-management-page">
                 <div className="editor-header">
                     <button onClick={handleBackToList} className="btn-back">
                         &larr; Back to List
                     </button>
-                    <h1>{currentView === VIEW.CREATE ? 'Create New Product' : `Edit: ${selectedProduct?.name}`}</h1>
+                    <h1>Create New Product</h1>
                 </div>
                 
                 <ProductForm 
-                    initialData={selectedProduct}
+                    initialData={null}
                     onSuccess={handleBackToList}
                     onCancel={handleBackToList}
                 />
@@ -147,13 +133,7 @@ const ProductManagementPage = () => {
                             
                             <div className="actions">
                                 <button
-                                    onClick={() => toast.error("Editing disabled in server-mode.")} 
-                                    className="btn-edit"
-                                >
-                                    Edit
-                                </button>
-                                <button 
-                                    onClick={() => handleDeleteProduct(product.id, product.name)} 
+                                    onClick={() => handleDeleteProduct(product.id, product.name)}
                                     className="btn-delete"
                                 >
                                     Delete

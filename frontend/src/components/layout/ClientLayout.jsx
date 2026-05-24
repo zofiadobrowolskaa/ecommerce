@@ -1,6 +1,7 @@
 import React from 'react';
 import { Routes, Route, Link, Navigate } from 'react-router-dom';
 import CartIcon from '../CartIcon';
+import ScrollToTop from '../ScrollToTop';
 import '../../styles/pages/_layout.scss';
 import HomePage from '../../pages/HomePage';
 import ProductListPage from '../../pages/ProductListPage';
@@ -23,6 +24,9 @@ const ClientLayout = () => {
           <CartIcon />
         </nav>
       </header>
+
+      {/* fires window.scrollTo(0,0) on every route change */}
+      <ScrollToTop />
 
       <main className="client-main">
         {/* client-side routing configuration */}
