@@ -14,8 +14,8 @@ const OrderConfirmationPage = () => {
     // retrieve all orders from global context to access stored order data
     const { orders } = useAppContext();
     
-    // find the specific order matching the ID from the URL
-    const order = orders.find(o => o.id === id);
+    // use == instead of === because backend returns numeric id but URL param is always a string
+    const order = orders.find(o => o.id == id);
 
     if (!order) {
         return (

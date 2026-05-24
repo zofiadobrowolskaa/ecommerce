@@ -274,7 +274,8 @@ const DashboardPage = () => {
               
               {pagination.paginatedItems.map(order => (
                 <div key={order.id} className="order-item">
-                  <span className="order-id" data-label="ID">#{order.id.slice(-6)}</span>
+                  {/* convert to string first — backend returns numeric id, slice is a string method */}
+                  <span className="order-id" data-label="ID">#{String(order.id).slice(-6)}</span>
                   <span className="customer-email" data-label="Customer">{order.details?.email}</span>
                   <span className="order-date" data-label="Date">
                       {new Date(order.date).toLocaleDateString()}
