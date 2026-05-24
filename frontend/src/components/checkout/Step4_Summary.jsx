@@ -4,7 +4,6 @@ import { useAppContext } from '../../context/AppContext';
 
 const Step4Summary = ({ prevStep, formData, cartTotal, cartItems, shippingCost, discountValue }) => {
 
-  // dodano 'products' do destrukturyzacji kontekstu, aby wyciagnac z niego zdjecia
   const { placeOrder, products } = useAppContext();
   const navigate = useNavigate();
   
@@ -12,36 +11,24 @@ const Step4Summary = ({ prevStep, formData, cartTotal, cartItems, shippingCost, 
   const [paymentStatus, setPaymentStatus] = useState('idle');
   const [orderId, setOrderId] = useState(null);
 
-  // main function handling final order submission
+  // send the order to the real checkout endpoint and navigate on success
   const handleFinalOrder = async () => {
-    // prevent multiple clicks during processing
+    // prevent double-submission while a request is in flight
     if (paymentStatus === 'processing') return;
 
-    // visual feedback: show processing state
-    setPaymentStatus('processing'); 
-    
+    setPaymentStatus('processing');
+
     try {
-      // simulate network/API delay
-      await new Promise(resolve => setTimeout(resolve, 2000)); 
+      // placeOrder calls POST /api/checkout and returns the real orderId from the backend
+      const newOrderId = await placeOrder(formData);
+      setOrderId(newOrderId);
+      setPaymentStatus('success');
 
-      // randomize transaction result (80% chance success)
-      const success = Math.random() > 0.2;
-
-      if (success) {
-        // clear cart and save order in history via context
-        const newOrderId = placeOrder(formData); 
-        setOrderId(newOrderId);
-        setPaymentStatus('success');
-        
-        // automatically navigate to order confirmation page
-        setTimeout(() => {
-          navigate(`/order-confirmation/${newOrderId}`);
-        }, 1000);
-
-      } else {
-        setPaymentStatus('error');
-      }
+      // short delay so the user sees the success message before redirect
+      setTimeout(() => navigate(`/order-confirmation/${newOrderId}`), 1000);
     } catch (err) {
+      // backend returned an error (e.g. out of stock, validation failure)
+      console.error('checkout failed', err);
       setPaymentStatus('error');
     }
   };
