@@ -1,8 +1,9 @@
-// frontend/src/context/AppContext.jsx
 import React, { createContext, useContext, useMemo, useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
 import useLocalStorage from '../hooks/useLocalStorage';
 import { authService } from '../auth/authService';
+import * as cartApi from '../api/cart';
+import * as ordersApi from '../api/orders';
+import * as productsApi from '../api/products';
 
 export const AppContext = createContext();
 
@@ -12,49 +13,57 @@ const calculateCartTotal = (currentCart, products) => {
     // safely match string or number IDs using ==
     const product = products.find(p => p.id == item.productId);
     if (!product) return total;
-    
+
     // safe check for variants using optional chaining
     const variant = product.variants?.find(v => v.id === item.variantId);
-    
+
     // force numerical types to prevent string concatenation bugs
     const basePrice = Number(product.price) || 0;
     const adjustment = variant ? Number(variant.priceAdjustment) : 0;
-    
+
     return total + ((basePrice + adjustment) * item.quantity);
   }, 0);
 };
 
 const defaultProfile = {
-    name: '',
-    surname: '',
-    email: '',
-    phone: '',
-    address: '',
-    house_number: '',
-    flat_number: '',
-    postalCode: '',
-    city: '',
-    country: '',
+  name: '', surname: '', email: '', phone: '',
+  address: '', house_number: '', flat_number: '',
+  postalCode: '', city: '', country: '',
 };
 
 export const AppProvider = ({ children }) => {
-  // state for products fetched from the backend (replaces local storage)
+  // products fetched from the backend on mount
   const [products, setProducts] = useState([]);
-  
-  // server-side cart state replacing local storage
+
+  // server-synced cart state
   const [cart, setCart] = useState([]);
-  
-  const [userRole, setUserRole] = useLocalStorage('userRole', 'client'); 
+
+  const [userRole, setUserRole] = useLocalStorage('userRole', 'client');
   const [discount, setDiscount] = useLocalStorage('discount', { code: '', percentage: 0 });
-  const [orders, setOrders] = useLocalStorage('orders', [])
+
+  // orders saved locally for the dashboard after each successful checkout
+  const [orders, setOrders] = useLocalStorage('orders', []);
+
   const [user, setUser] = useState(null);
   const [profile, setProfileState] = useState(defaultProfile);
 
-  // fetch products globally on mount to populate context for cart calculations
+  // returns the authenticated userId or a persistent guest uuid stored in localStorage
+  const getUserId = useCallback(() => {
+    if (user?.userId) return user.userId;
+    let guestId = localStorage.getItem('guestUserId');
+    if (!guestId) {
+      // crypto.randomUUID is available in all modern browsers
+      guestId = `guest-${crypto.randomUUID()}`;
+      localStorage.setItem('guestUserId', guestId);
+    }
+    return guestId;
+  }, [user]);
+
+  // fetch all products from the api gateway on mount
   useEffect(() => {
     const fetchGlobalProducts = async () => {
       try {
-        const response = await axios.get('http://localhost:3000/api/products');
+        const response = await productsApi.getProducts();
         setProducts(response.data);
       } catch (error) {
         console.error('failed to fetch products for context', error);
@@ -63,23 +72,23 @@ export const AppProvider = ({ children }) => {
     fetchGlobalProducts();
   }, []);
 
-  // initialize authentication state
+  // initialize authentication state from the stored token
   useEffect(() => {
     const initAuth = () => {
       const currentUser = authService.getCurrentUser();
       if (currentUser) {
         setUser(currentUser);
         setProfileState({
-            name: currentUser.name || '',
-            surname: currentUser.surname || '',
-            email: currentUser.email || '',
-            phone: currentUser.phone || '',
-            address: currentUser.address || '',
-            house_number: currentUser.house_number || '',
-            flat_number: currentUser.flat_number || '',
-            postalCode: currentUser.postalCode || '',
-            city: currentUser.city || '',
-            country: currentUser.country || '',
+          name: currentUser.name || '',
+          surname: currentUser.surname || '',
+          email: currentUser.email || '',
+          phone: currentUser.phone || '',
+          address: currentUser.address || '',
+          house_number: currentUser.house_number || '',
+          flat_number: currentUser.flat_number || '',
+          postalCode: currentUser.postalCode || '',
+          city: currentUser.city || '',
+          country: currentUser.country || '',
         });
       }
     };
@@ -88,39 +97,41 @@ export const AppProvider = ({ children }) => {
 
   const isAdmin = userRole === 'admin';
   const loginAs = (role) => {
-    if (role === 'admin' || role === 'client') {
-        setUserRole(role);
-    }
+    if (role === 'admin' || role === 'client') setUserRole(role);
   };
 
   const cartTotal = useMemo(() => calculateCartTotal(cart, products), [cart, products]);
   const discountValue = useMemo(() => cartTotal * discount.percentage, [cartTotal, discount]);
 
-  // sync function to push cart state to api gateway
+  // build the items payload expected by the backend from the current cart
+  const buildCartItems = useCallback((cartItems) => {
+    return cartItems.map(item => {
+      const product = products.find(p => p.id == item.productId);
+      const variant = product?.variants?.find(v => v.id === item.variantId);
+      // sum base price and variant adjustment for each line
+      const price = (Number(product?.price) || 0) + (Number(variant?.priceAdjustment) || 0);
+      return { productId: item.productId, quantity: item.quantity, price };
+    });
+  }, [products]);
+
+  // update local cart state then push the full state to the server
   const syncCartWithServer = useCallback(async (newCart) => {
+    // update UI immediately (optimistic update)
     setCart(newCart);
     try {
-      // transform frontend cart format into backend payload
-      const items = newCart.map(item => {
-        const product = products.find(p => p.id == item.productId);
-        const variant = product?.variants?.find(v => v.id === item.variantId);
-        
-        // safely extract numeric prices
-        const price = (Number(product?.price) || 0) + (Number(variant?.priceAdjustment) || 0);
-        
-        return { productId: item.productId, quantity: item.quantity, price };
-      });
-      
-      const userId = user?.email || 'u1'; // fallback to u1 for testing
-      await axios.post(`http://localhost:3000/api/cart/${userId}/sync`, { items });
+      const items = buildCartItems(newCart);
+      const userId = getUserId();
+      await cartApi.syncCart(userId, items);
     } catch (error) {
       console.error('failed to sync cart with server', error);
     }
-  }, [products, user]);
+  }, [buildCartItems, getUserId]);
 
-  // modified cart functions to trigger server sync
+  // add a product variant to the cart, merging quantity if already present
   const addToCart = useCallback((productId, variantId, quantity = 1, size = null) => {
-    const idx = cart.findIndex(item => item.productId === productId && item.variantId === variantId && item.size === size);
+    const idx = cart.findIndex(
+      item => item.productId === productId && item.variantId === variantId && item.size === size
+    );
     let newCart;
     if (idx > -1) {
       newCart = [...cart];
@@ -132,30 +143,44 @@ export const AppProvider = ({ children }) => {
   }, [cart, syncCartWithServer]);
 
   const removeFromCart = useCallback((productId, variantId, size = null) => {
-    const newCart = cart.filter(item => !(item.productId === productId && item.variantId === variantId && item.size === size));
+    const newCart = cart.filter(
+      item => !(item.productId === productId && item.variantId === variantId && item.size === size)
+    );
     syncCartWithServer(newCart);
   }, [cart, syncCartWithServer]);
 
   const updateQuantity = useCallback((productId, variantId, newQuantity, size = null) => {
     if (newQuantity <= 0) return removeFromCart(productId, variantId, size);
-    const newCart = cart.map(item => (item.productId === productId && item.variantId === variantId && item.size === size) ? { ...item, quantity: newQuantity } : item);
+    const newCart = cart.map(item =>
+      (item.productId === productId && item.variantId === variantId && item.size === size)
+        ? { ...item, quantity: newQuantity }
+        : item
+    );
     syncCartWithServer(newCart);
   }, [cart, removeFromCart, syncCartWithServer]);
 
   const applyDiscount = useCallback((code) => {
     if (code === 'AURA20') {
-        setDiscount({ code: 'AURA20', percentage: 0.20 });
-        return true;
+      setDiscount({ code: 'AURA20', percentage: 0.20 });
+      return true;
     }
     return false;
   }, [setDiscount]);
-  
+
   const resetDiscount = useCallback(() => setDiscount({ code: '', percentage: 0 }), [setDiscount]);
 
-  // place order clears the cart and pushes empty state to server
-  const placeOrder = useCallback((orderData) => {
+  // send checkout to the real backend, then save the order locally for the dashboard
+  const placeOrder = useCallback(async (orderData) => {
+    const userId = getUserId();
+    const items = buildCartItems(cart);
+
+    // throws on network error or validation failure — caller must catch
+    const response = await ordersApi.checkout(userId, items);
+    const { orderId } = response.data;
+
+    // persist order locally so the admin dashboard can display it without extra calls
     const newOrder = {
-      id: `ORD-${Date.now()}`,
+      id: orderId,
       date: new Date().toISOString(),
       items: cart,
       total: cartTotal - discountValue,
@@ -163,10 +188,13 @@ export const AppProvider = ({ children }) => {
       status: 'Completed',
     };
     setOrders(prev => [newOrder, ...prev]);
-    syncCartWithServer([]); // clear server cart
+
+    // clear the server-side cart after successful checkout
+    await syncCartWithServer([]);
     resetDiscount();
-    return newOrder.id;
-  }, [cart, cartTotal, discountValue, setOrders, syncCartWithServer, resetDiscount]);
+
+    return orderId;
+  }, [cart, cartTotal, discountValue, getUserId, buildCartItems, syncCartWithServer, resetDiscount, setOrders]);
 
   const removeOrder = useCallback((id) => setOrders(prev => prev.filter(o => o.id !== id)), [setOrders]);
 
@@ -175,12 +203,7 @@ export const AppProvider = ({ children }) => {
       await new Promise(resolve => setTimeout(resolve, 500));
       const userData = authService.login(email, password);
       setUser(userData);
-      
-      setProfileState({
-          ...defaultProfile,
-          ...userData
-      });
-      
+      setProfileState({ ...defaultProfile, ...userData });
       return { success: true };
     } catch (error) {
       return { success: false, message: error.message };
@@ -192,14 +215,12 @@ export const AppProvider = ({ children }) => {
       await new Promise(resolve => setTimeout(resolve, 500));
       const userData = authService.register(email, password, name, surname);
       setUser(userData);
-      
       setProfileState({
-          ...defaultProfile,
-          name: userData.name,
-          surname: userData.surname,
-          email: userData.email
+        ...defaultProfile,
+        name: userData.name,
+        surname: userData.surname,
+        email: userData.email,
       });
-      
       return { success: true };
     } catch (error) {
       return { success: false, message: error.message };
@@ -210,33 +231,38 @@ export const AppProvider = ({ children }) => {
     authService.logout();
     setUser(null);
     setProfileState(defaultProfile);
-    syncCartWithServer([]); // clear server cart on logout
+    // clear the server cart tied to this user
+    syncCartWithServer([]);
     setDiscount({ code: '', percentage: 0 });
   }, [syncCartWithServer, setDiscount]);
 
   const updateProfile = useCallback((updatedData) => {
     try {
-        setProfileState(prev => ({ ...prev, ...updatedData }));
-        
-        if (user) {
-           const updatedUser = authService.updateUser(updatedData);
-           setUser(updatedUser);
-        }
-    } catch (error) {
-      // profile update failed
+      setProfileState(prev => ({ ...prev, ...updatedData }));
+      if (user) {
+        const updatedUser = authService.updateUser(updatedData);
+        setUser(updatedUser);
+      }
+    } catch {
+      // profile update failed silently
     }
   }, [user]);
 
-  const addProduct = useCallback((newProduct) => setProducts(prev => [newProduct, ...prev]), [setProducts]);
-  const updateProduct = useCallback((updatedProduct) => setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p)), [setProducts]);
-  const deleteProduct = useCallback((id) => setProducts(prev => prev.filter(p => p.id !== id)), [setProducts]);
+  const addProduct = useCallback((newProduct) => setProducts(prev => [newProduct, ...prev]), []);
+
+  const updateProduct = useCallback((updatedProduct) =>
+    setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p)), []);
+
+  // delete product from the backend then remove it from local state
+  const deleteProduct = useCallback(async (id) => {
+    await productsApi.deleteProduct(id);
+    setProducts(prev => prev.filter(p => p.id !== id));
+  }, []);
 
   const resetAppData = useCallback(() => {
-    localStorage.removeItem('products');
     localStorage.removeItem('orders');
     localStorage.removeItem('discount');
-    syncCartWithServer([]); // clear server cart
-
+    syncCartWithServer([]);
     window.location.reload();
   }, [syncCartWithServer]);
 
@@ -250,6 +276,7 @@ export const AppProvider = ({ children }) => {
     profile, updateProfile,
     addProduct, updateProduct, deleteProduct,
     resetAppData,
+    getUserId,
   };
 
   return (
@@ -260,9 +287,7 @@ export const AppProvider = ({ children }) => {
 };
 
 export const useAppContext = () => {
-  const context = useContext(AppContext)
-  if (!context) {
-    throw new Error('useAppContext must be used within an AppProvider')
-  }
-  return context
-}
+  const context = useContext(AppContext);
+  if (!context) throw new Error('useAppContext must be used within an AppProvider');
+  return context;
+};

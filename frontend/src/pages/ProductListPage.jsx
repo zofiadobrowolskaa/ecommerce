@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-// import { useAppContext } from '../context/AppContext'; // Omit context, we fetch directly
 import useProductFiltering from '../hooks/useProductFiltering';
+// product service wraps the api client to avoid hardcoded urls
+import * as productsApi from '../api/products';
 import usePagination from '../hooks/usePagination';
 import ProductCard from '../components/ProductCard';
 import FilterSidebar from '../components/FilterSidebar';
@@ -16,17 +17,15 @@ const ProductListPage = () => {
   const { filters, setFilters, filteredProducts } = useProductFiltering(products);
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // fetch products from api gateway
+  // fetch products from the api gateway via the products service module
   useEffect(() => {
     const fetchProducts = async () => {
       try {
         setLoading(true);
-        const response = await fetch('http://localhost:3000/api/products');
-        if (!response.ok) throw new Error('failed to fetch products');
-        
-        const data = await response.json();
-        setProducts(data);
+        const response = await productsApi.getProducts();
+        setProducts(response.data);
       } catch (err) {
+        // axios stores the friendly message in err.message
         setError(err.message);
       } finally {
         setLoading(false);
