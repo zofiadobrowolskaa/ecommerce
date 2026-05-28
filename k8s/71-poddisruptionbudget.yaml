@@ -1,0 +1,26 @@
+# pdb guarantees a minimum number of replicas stay alive during voluntary disruptions
+# (node drains, rolling updates triggered by other operators, etc.)
+
+# api-gateway is the public-facing tier; keep at least 1 pod up at all times
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway-pdb
+  namespace: aura
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+---
+# pg-service handles inventory and checkout traffic; keep at least 1 pod up
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pg-service-pdb
+  namespace: aura
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: pg-service

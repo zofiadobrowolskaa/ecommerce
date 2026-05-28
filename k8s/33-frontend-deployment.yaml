@@ -1,0 +1,61 @@
+# frontend served by nginx-unprivileged, the spa is baked into the image at build time
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: aura
+spec:
+  # 2 replicas so a rolling update keeps the site reachable
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # uid 101 is the nginx user inside the nginxinc/nginx-unprivileged image
+        runAsUser: 101
+        fsGroup: 101
+      containers:
+      - name: frontend
+        image: ghcr.io/zofiadobrowolskaa/aura-frontend:latest
+        ports:
+        # nginx-unprivileged listens on 8080 because non-root cannot bind <1024
+        - containerPort: 8080
+        # readiness probe: /health serves the literal string "ok" from the nginx config
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        # liveness probe: same endpoint on a longer cadence
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        # small request/limit because nginx serving static files is very light
+        resources:
+          requests:
+            cpu: "20m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          # nginx-unprivileged writes pid file and cache to /tmp, so root fs cannot be read-only
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: ["ALL"]

@@ -1,0 +1,86 @@
+# mongodb as a statefulset so the document store keeps a stable identity (mongodb-0)
+# and a persistent volume that survives pod restarts
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: aura
+spec:
+  # binds the statefulset to the headless service for stable dns (mongodb-0.mongodb)
+  serviceName: mongodb
+  # single replica is intentional, this project does not run a replica set
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      # pod-level security context: drop root and grant pvc write access
+      securityContext:
+        runAsNonRoot: true
+        # uid 999 is the mongodb user baked into the official mongo:6 image
+        runAsUser: 999
+        # fsGroup makes the mounted pvc writable by the mongod process
+        fsGroup: 999
+      containers:
+      - name: mongodb
+        image: mongo:6
+        ports:
+        - containerPort: 27017
+        env:
+        # admin username from configmap (non-sensitive)
+        - name: MONGO_INITDB_ROOT_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: aura-config
+              key: MONGO_INITDB_ROOT_USERNAME
+        # admin password from secret (sensitive)
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aura-secret
+              key: MONGO_PASSWORD
+        # readiness probe: stop sending traffic if the admin ping fails
+        readinessProbe:
+          exec:
+            command:
+            - mongosh
+            - --quiet
+            - --eval
+            - "db.adminCommand('ping').ok"
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        # liveness probe: kubelet restarts the container if mongo becomes unresponsive
+        livenessProbe:
+          exec:
+            command:
+            - mongosh
+            - --quiet
+            - --eval
+            - "db.adminCommand('ping').ok"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        # explicit cpu/memory requests and limits
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        # mount the persistent volume that holds mongo's data files
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+  # one pvc per pod replica, providing the storage that survives restarts
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi

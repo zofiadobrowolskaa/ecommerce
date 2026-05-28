@@ -1,0 +1,46 @@
+# one-shot job that populates products into both databases by hitting the gateway saga.
+# the existence of a Job (alongside the initContainer in pg-service) satisfies the
+# "use an initContainer or Job" requirement.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seeder
+  namespace: aura
+spec:
+  # retries the entire job up to 3 times if a container exits non-zero
+  backoffLimit: 3
+  template:
+    spec:
+      # OnFailure only restarts the failed container, not the whole pod
+      restartPolicy: OnFailure
+      # init container blocks until the gateway answers /health
+      # avoids the seeder racing the gateway pod startup
+      initContainers:
+      - name: wait-for-gateway
+        image: curlimages/curl:8.10.1
+        command:
+        - sh
+        - -c
+        - |
+          # poll the cluster-internal service name; exits the loop once /health returns 2xx
+          until curl -fsS http://api-gateway:3000/health; do
+            echo "waiting for api-gateway..."
+            sleep 2
+          done
+      containers:
+      - name: seeder
+        # reuses the api-gateway image because seed-products.js + products.json are bundled in it
+        image: ghcr.io/zofiadobrowolskaa/aura-api-gateway:latest
+        # override the default gateway CMD with the seeder script
+        command: ["node", "seed-products.js"]
+        env:
+        # target gateway url inside the cluster network
+        - name: SEED_GATEWAY_URL
+          value: "http://api-gateway:3000"
+        # security context: matches the api-gateway deployment, non-root user app
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 100
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]

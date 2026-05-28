@@ -1,0 +1,88 @@
+# postgres as a statefulset so the database pod keeps a stable identity (postgres-0)
+# and a persistent volume that survives pod restarts
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: aura
+spec:
+  # binds the statefulset to the headless service of the same name for stable dns
+  serviceName: postgres
+  # single replica is intentional: no built-in replication, we only need durability
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # pod-level security context: drop root for the entire pod (reused by the db tier)
+      securityContext:
+        runAsNonRoot: true
+        # uid 999 is the postgres user baked into the official postgres:15-alpine image
+        runAsUser: 999
+        # fsGroup makes the mounted pvc writable by the postgres process
+        fsGroup: 999
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        # database name from configmap (non-sensitive)
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: aura-config
+              key: POSTGRES_DB
+        # database user from configmap (non-sensitive)
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: aura-config
+              key: POSTGRES_USER
+        # database password from secret (sensitive)
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aura-secret
+              key: POSTGRES_PASSWORD
+        # pgdata must live in a subdirectory of the mount so the initdb lock file works
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        # readiness probe: pod stops receiving traffic when pg_isready fails (W6)
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "user", "-d", "ecommerce_db"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # liveness probe: kubelet restarts the container if postgres becomes unresponsive (W6)
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "user", "-d", "ecommerce_db"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        # explicit cpu/memory requests and limits required by [W6]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        # mount the persistent volume that survives pod restarts (W14)
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+  # volumeClaimTemplates dynamically provisions one pvc per pod replica
+  # this is what makes postgres data persist across pod restarts (W3 + W14)
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
