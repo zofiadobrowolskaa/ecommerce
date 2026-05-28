@@ -1,0 +1,73 @@
+# mongo-service runs as a stateless deployment in front of the mongodb statefulset
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-service
+  namespace: aura
+spec:
+  # 2 replicas to match the api-gateway and pg-service tiers
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: mongo-service
+  template:
+    metadata:
+      labels:
+        app: mongo-service
+      # prometheus discovery annotations
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3002"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # uid 100 matches the "app" user from the catalog-analytics-service Dockerfile
+        runAsUser: 100
+        fsGroup: 101
+      containers:
+      - name: mongo-service
+        image: ghcr.io/zofiadobrowolskaa/aura-mongo-service:latest
+        ports:
+        - containerPort: 3002
+        env:
+        - name: PORT
+          value: "3002"
+        # full mongo uri lives in the secret because it contains the password
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: aura-secret
+              key: MONGO_URI
+        # readiness probe: /ready hits mongo admin.ping before traffic flows
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3002
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # liveness probe: process alive check
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3002
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "200Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        # container-level hardening
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: ["ALL"]
