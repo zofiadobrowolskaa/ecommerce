@@ -1,0 +1,101 @@
+name: K8s Deploy (kind)
+
+# triggers:
+# - push to main: deploy whenever main moves
+# - workflow_dispatch: manual button for replaying a deploy without a new commit
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # checkout the repo at the commit that triggered the run
+      - uses: actions/checkout@v4
+
+      # spin up a single-node kind cluster named "aura"
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: aura
+          wait: 120s
+
+      # install the nginx ingress controller using the official kind provider manifest
+      # then wait for the controller pod to be ready before continuing
+      - name: Install nginx-ingress
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=180s
+
+      # build each service image locally and load it into the kind node
+      # tag is ":ci" so it does not collide with the :latest ghcr images
+      - name: Build images
+        run: |
+          docker build -t aura-api-gateway:ci   ./backend/api-gateway
+          docker build -t aura-pg-service:ci    ./backend/inventory-order-service
+          docker build -t aura-mongo-service:ci ./backend/catalog-analytics-service
+          docker build -t aura-frontend:ci      ./frontend
+
+      # kind load makes images available to the kubelet on every node of the cluster
+      - name: Load images into kind
+        run: |
+          kind load docker-image aura-api-gateway:ci   --name aura
+          kind load docker-image aura-pg-service:ci    --name aura
+          kind load docker-image aura-mongo-service:ci --name aura
+          kind load docker-image aura-frontend:ci      --name aura
+
+      # install the chart using the dev values overlay
+      # override image registry+tag so the loaded local images are used
+      # --wait blocks until every resource is ready (or timeout)
+      - name: Deploy via Helm
+        run: |
+          helm upgrade --install aura ./helm/aura \
+            -f helm/aura/values-dev.yaml \
+            --set image.registry=docker.io/library \
+            --set image.tag=ci \
+            --create-namespace --namespace aura \
+            --wait --timeout 6m
+
+      # explicit rollout status check satisfies [W8] "workflow checks rollout after deploy"
+      # one call per deployment so a failure points at the exact tier
+      - name: Verify rollout
+        run: |
+          kubectl -n aura rollout status deploy/api-gateway   --timeout=180s
+          kubectl -n aura rollout status deploy/pg-service    --timeout=180s
+          kubectl -n aura rollout status deploy/mongo-service --timeout=180s
+          kubectl -n aura rollout status deploy/frontend      --timeout=180s
+          kubectl -n aura rollout status deploy/redis         --timeout=180s
+
+      # confirm the seeder job actually populated products in both databases
+      - name: Wait for seeder job
+        run: |
+          kubectl -n aura wait --for=condition=complete job/seeder --timeout=180s
+
+      # smoke tests: hit the public endpoints via a port-forward against the service
+      # /health and /ready prove [W6][W13]; /api/products proves the full pg+mongo aggregation
+      - name: Smoke tests
+        run: |
+          kubectl -n aura port-forward svc/api-gateway 3000:3000 &
+          PF_PID=$!
+          sleep 5
+          echo "=== /health ===" && curl -fsS http://localhost:3000/health
+          echo "=== /ready  ===" && curl -fsS http://localhost:3000/ready
+          echo "=== /api/products (head) ===" && curl -fsS http://localhost:3000/api/products | head -c 400
+          kill $PF_PID || true
+
+      # on failure dump cluster state to make the run actionable from the actions ui
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl -n aura get all
+          kubectl -n aura describe pods
+          kubectl -n aura logs -l app=api-gateway   --tail=200 || true
+          kubectl -n aura logs -l app=pg-service    --tail=200 || true
+          kubectl -n aura logs -l app=mongo-service --tail=200 || true

@@ -1,0 +1,63 @@
+name: Build and Push Images
+
+# triggers:
+# - workflow_run: chained after the e2e tests workflow, only runs when tests pass on main
+# - workflow_dispatch: manual button in the github ui, useful for re-publishing without code changes
+on:
+  workflow_run:
+    workflows: ["E2E Critical Path Tests"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # only proceed when the upstream e2e workflow finished successfully
+    # (or when this workflow was started manually via workflow_dispatch)
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+    # permissions required to push images to ghcr.io under the repository owner
+    permissions:
+      contents: read
+      packages: write
+
+    # matrix strategy: one image per microservice, built in parallel
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { name: api-gateway,   ctx: ./backend/api-gateway }
+          - { name: pg-service,    ctx: ./backend/inventory-order-service }
+          - { name: mongo-service, ctx: ./backend/catalog-analytics-service }
+          - { name: frontend,      ctx: ./frontend }
+
+    steps:
+      # checkout the repo at the commit that triggered the upstream workflow_run
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      # buildx supports multi-platform builds and layer caching
+      - uses: docker/setup-buildx-action@v3
+
+      # authenticate to the github container registry using the auto-provisioned token
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # build the image from the matrix service context and push two tags:
+      # - :latest for the helm chart default
+      # - :<sha> as an immutable reference for traceability
+      - uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.service.ctx }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aura-${{ matrix.service.name }}:latest
+            ghcr.io/${{ github.repository_owner }}/aura-${{ matrix.service.name }}:${{ github.sha }}
+          # in-flight build cache stored in the actions cache to speed up subsequent runs
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

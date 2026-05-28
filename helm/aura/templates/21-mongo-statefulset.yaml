@@ -36,8 +36,11 @@ spec:
             - --quiet
             - --eval
             - "db.adminCommand('ping').ok"
-          initialDelaySeconds: 10
-          periodSeconds: 5
+          # mongosh has a heavy node.js startup; bump timeout above the default 1s
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
         livenessProbe:
           exec:
             command:
@@ -45,8 +48,10 @@ spec:
             - --quiet
             - --eval
             - "db.adminCommand('ping').ok"
-          initialDelaySeconds: 30
-          periodSeconds: 10
+          initialDelaySeconds: 45
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 5
         resources:
           requests:
             cpu: "100m"
