@@ -1,0 +1,29 @@
+# non-sensitive configuration shared by every workload in the release
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aura-config
+  namespace: {{ .Values.namespace }}
+data:
+  # marker showing which overlay was applied; verifiable with kubectl get cm -o yaml
+  ENVIRONMENT: {{ .Values.environment | quote }}
+
+  # postgres connection details (non-sensitive portions)
+  POSTGRES_DB: "ecommerce_db"
+  POSTGRES_USER: "user"
+
+  # mongo admin username (the matching password lives in the Secret)
+  MONGO_INITDB_ROOT_USERNAME: "admin"
+
+  # ports each service listens on inside the cluster
+  API_GATEWAY_PORT: "3000"
+  INVENTORY_SERVICE_PORT: "3001"
+  CATALOG_SERVICE_PORT: "3002"
+
+  # service-to-service urls resolved by kubernetes cluster dns
+  INVENTORY_SERVICE_URL: "http://pg-service:3001"
+  CATALOG_SERVICE_URL: "http://mongo-service:3002"
+
+  # redis cache target inside the cluster (used by api-gateway)
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"

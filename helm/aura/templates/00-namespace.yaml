@@ -1,0 +1,8 @@
+# parameterized namespace; the name comes from values.namespace so the same chart
+# can be installed multiple times into different namespaces if needed
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace }}
+  labels:
+    name: {{ .Values.namespace }}
