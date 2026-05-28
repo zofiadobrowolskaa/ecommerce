@@ -79,6 +79,16 @@ services:
       mongodb:
         condition: service_healthy
 
+  # redis used as a short-lived cache in front of the product list endpoint
+  # added for the k8s "cache, queue or worker" requirement (W15)
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # unified api gateway routing to microservices
   api-gateway:
     build: ./backend/api-gateway
@@ -89,6 +99,9 @@ services:
       # service discovery via env so the gateway is decoupled from container names
       - INVENTORY_SERVICE_URL=http://pg-service:3001
       - CATALOG_SERVICE_URL=http://mongo-service:3002
+      # redis cache target inside the docker compose network
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     # healthcheck script checking gateway readiness
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
@@ -96,11 +109,13 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
-    # gateway proxies to both microservices, so it cannot start before they are ready
+    # gateway proxies to both microservices and the redis cache, so it cannot start before they are ready
     depends_on:
       pg-service:
         condition: service_healthy
       mongo-service:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # one-shot seeder: runs after gateway is healthy, populates products, then exits
@@ -118,12 +133,12 @@ services:
     # prevent container from restarting after successful exit
     restart: "no"
 
-  # react frontend application
+  # react frontend application (served by nginx-unprivileged on container port 8080)
   frontend:
     build: ./frontend
-    # map host port to vite dev server port 5173
+    # map host port to the nginx-unprivileged listener (8080)
     ports:
-      - "${FRONTEND_PORT}:5173"
+      - "${FRONTEND_PORT}:8080"
     # wait for backend api gateway to be ready
     depends_on:
       api-gateway:

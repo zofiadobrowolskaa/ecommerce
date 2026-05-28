@@ -1,5 +1,6 @@
 const express = require('express');
 const knex = require('knex')(require('../knexfile').development);
+const promClient = require('prom-client');
 const { sequelize, Cart, CartLine } = require('./db/sequelize');
 const pgPool = require('./db/pgPool');
 const pgErrorMap = require('./middleware/errorMiddleware');
@@ -8,6 +9,31 @@ const prisma = new PrismaClient();
 
 const app = express();
 app.use(express.json());
+
+// prometheus metrics registry, scoped to this service
+const metricsRegister = new promClient.Registry();
+// adds default node.js process metrics (cpu, memory, event loop)
+promClient.collectDefaultMetrics({ register: metricsRegister, prefix: 'pg_service_' });
+
+// counter incremented on every finished http request
+const httpRequestsTotal = new promClient.Counter({
+  name: 'pg_service_http_requests_total',
+  help: 'total http requests handled by the pg-service',
+  labelNames: ['method', 'route', 'status'],
+  registers: [metricsRegister]
+});
+
+// middleware capturing request metrics after the response is sent
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    httpRequestsTotal.inc({
+      method: req.method,
+      route: req.route?.path || req.path,
+      status: res.statusCode
+    });
+  });
+  next();
+});
 
 // formats unified error response containing error, code, and details
 const sendError = (res, status, error, details) =>
@@ -24,9 +50,28 @@ async function syncProductsStockFromVariants(tx, productIds) {
   }
 }
 
-// simple healthcheck endpoint
+// liveness probe: confirms the process is alive (does not touch the database)
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'inventory-order-service' });
+});
+
+// readiness probe: verifies the postgres connection is usable
+// kubernetes will not route traffic to this pod until select 1 succeeds
+app.get('/ready', async (req, res) => {
+  try {
+    // single round trip to postgres, fails fast if the database is down
+    await pgPool.query('SELECT 1');
+    res.status(200).json({ ready: true });
+  } catch (e) {
+    // 503 makes the pod NotReady from kubernetes' point of view
+    res.status(503).json({ ready: false, reason: e.message });
+  }
+});
+
+// prometheus scrape endpoint, returns the registry in text format
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', metricsRegister.contentType);
+  res.end(await metricsRegister.metrics());
 });
 
 // CATALOG (KNEX)
