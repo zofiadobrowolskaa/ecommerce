@@ -1,0 +1,64 @@
+# postgres statefulset, storage size parameterized for per-env tuning
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: {{ .Values.namespace }}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          valueFrom: { configMapKeyRef: { name: aura-config, key: POSTGRES_DB } }
+        - name: POSTGRES_USER
+          valueFrom: { configMapKeyRef: { name: aura-config, key: POSTGRES_USER } }
+        - name: POSTGRES_PASSWORD
+          valueFrom: { secretKeyRef: { name: aura-secret, key: POSTGRES_PASSWORD } }
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "user", "-d", "ecommerce_db"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "user", "-d", "ecommerce_db"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          # storage size is environment-specific (1Gi dev, 5Gi prod) and comes from values
+          storage: {{ .Values.postgres.storage }}
