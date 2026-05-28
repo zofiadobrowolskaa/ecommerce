@@ -1,0 +1,9 @@
+# dedicated namespace that contains every workload of this project
+# enables clean teardown (kubectl delete ns aura) and scoped RBAC/NetworkPolicies
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aura
+  labels:
+    # label used by NetworkPolicy namespaceSelector matches
+    name: aura

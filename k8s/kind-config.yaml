@@ -1,0 +1,22 @@
+# kind cluster definition tailored for this project
+# maps host ports 80/443 into the control plane so the ingress controller is reachable
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aura
+nodes:
+- role: control-plane
+  # labels the node so the ingress-nginx kind provider can target it
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  # publishes ingress controller ports on the host machine
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
