@@ -1,0 +1,152 @@
+# default-deny baseline: nothing in the namespace can be reached over the network
+# unless an explicit allow rule below opens a path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: aura
+spec:
+  # empty podSelector matches every pod in the namespace
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# postgres database only accepts connections from the pg-service pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-pg-service
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: pg-service
+    ports:
+    - port: 5432
+---
+# mongodb only accepts connections from the mongo-service pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongodb-allow-mongo-service
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: mongodb
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: mongo-service
+    ports:
+    - port: 27017
+---
+# redis cache only accepts connections from the api-gateway pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-allow-gateway
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api-gateway
+    ports:
+    - port: 6379
+---
+# pg-service only accepts connections from the api-gateway and the seeder job
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pg-svc-allow-gateway
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: pg-service
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api-gateway
+    ports:
+    - port: 3001
+---
+# mongo-service only accepts connections from the api-gateway and the seeder job
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-svc-allow-gateway
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: mongo-service
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api-gateway
+    ports:
+    - port: 3002
+---
+# api-gateway accepts traffic from the ingress-nginx namespace and from in-cluster jobs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-allow-ingress
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes: [Ingress]
+  ingress:
+  # the ingress controller lives in its own namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - port: 3000
+  # the seeder job runs in the aura namespace and must reach the gateway
+  - from:
+    - podSelector:
+        matchLabels:
+          job-name: seeder
+    ports:
+    - port: 3000
+---
+# frontend accepts traffic from the ingress-nginx namespace only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-allow-ingress
+  namespace: aura
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - port: 8080
