@@ -1,0 +1,58 @@
+# default values used when no -f override is supplied
+# these defaults are sized for local dev (kind/minikube)
+
+# kubernetes namespace every resource is created in
+namespace: aura
+
+# free-text label injected as a configmap entry; useful for verifying which overlay won
+environment: dev
+
+# container image coordinates shared by every workload
+image:
+  # registry prefix; for local kind use docker.io/library after kind load
+  registry: ghcr.io/zofiadobrowolskaa
+  # image tag; for local kind use the tag passed to docker build
+  tag: latest
+  # pull policy: IfNotPresent works for both kind-loaded local images and remote registries
+  pullPolicy: IfNotPresent
+
+# ingress host header; map this name to 127.0.0.1 in /etc/hosts on the dev machine
+ingress:
+  host: aura.local
+  className: nginx
+
+# api gateway tier (public-facing backend)
+gateway:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+
+# pg-service tier (postgres-backed inventory + checkout)
+pgService:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+
+# mongo-service tier (mongo-backed catalog + analytics)
+mongoService:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+
+# frontend tier (nginx serving the spa)
+frontend:
+  replicas: 2
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits:   { cpu: 200m, memory: 128Mi }
+
+# postgres statefulset storage
+postgres:
+  storage: 1Gi
+
+# mongodb statefulset storage
+mongodb:
+  storage: 1Gi

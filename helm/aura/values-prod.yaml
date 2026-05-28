@@ -1,0 +1,39 @@
+# production overlay: higher replicas, larger requests/limits, larger storage,
+# real hostname instead of the local kind alias
+
+environment: prod
+
+# api gateway: scale out and raise the cpu ceiling
+gateway:
+  replicas: 3
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 512Mi }
+
+# pg-service: more headroom for checkout transactions
+pgService:
+  replicas: 3
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 512Mi }
+
+# mongo-service: more headroom for aggregation queries
+mongoService:
+  replicas: 3
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits:   { cpu: 1000m, memory: 512Mi }
+
+# frontend: scale out the nginx layer
+frontend:
+  replicas: 3
+
+# larger volumes for production data growth
+postgres:
+  storage: 5Gi
+mongodb:
+  storage: 5Gi
+
+# production hostname (replace with the real domain when deploying for real)
+ingress:
+  host: aura.example.com

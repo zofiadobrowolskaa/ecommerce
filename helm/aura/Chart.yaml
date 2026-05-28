@@ -1,0 +1,9 @@
+# helm chart metadata for the aura jewellery platform
+apiVersion: v2
+name: aura
+description: aura jewellery e-commerce platform deployed to kubernetes
+type: application
+# chart version (bumped on chart changes)
+version: 0.1.0
+# application version (bumped on app code changes)
+appVersion: "1.0.0"
