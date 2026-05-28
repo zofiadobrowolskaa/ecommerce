@@ -43,31 +43,24 @@ spec:
             secretKeyRef:
               name: aura-secret
               key: MONGO_PASSWORD
-        # readiness probe: stop sending traffic if the admin ping fails
-        # mongosh has a heavy node.js startup, so timeoutSeconds is bumped above the 1s default
+        # tcpSocket probes used because the mongosh exec probe regularly hits
+        # the 5s timeout on resource-constrained nodes (mongosh has a heavy
+        # node.js startup). mongo opens the listening port only once it is ready
+        # to accept commands, so an open tcp socket is a reliable readiness signal.
         readinessProbe:
-          exec:
-            command:
-            - mongosh
-            - --quiet
-            - --eval
-            - "db.adminCommand('ping').ok"
-          initialDelaySeconds: 15
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 6
-        # liveness probe: kubelet restarts the container if mongo becomes unresponsive
+          tcpSocket:
+            port: 27017
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
         livenessProbe:
-          exec:
-            command:
-            - mongosh
-            - --quiet
-            - --eval
-            - "db.adminCommand('ping').ok"
-          initialDelaySeconds: 45
-          periodSeconds: 20
-          timeoutSeconds: 5
-          failureThreshold: 5
+          tcpSocket:
+            port: 27017
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 3
+          failureThreshold: 3
         # explicit cpu/memory requests and limits
         resources:
           requests:
