@@ -32,6 +32,19 @@ redis.connect().catch(() => { /* connection errors handled by event listener abo
 // ttl in seconds for cached product list payloads
 const PRODUCTS_CACHE_TTL = 30;
 
+// drops every cached /api/products variant after any write that changes products or stock
+// so the next read goes to postgres+mongo and reflects the latest state
+async function invalidateProductsCache() {
+  if (!redisAvailable) return;
+  try {
+    // find every cache entry under our products list namespace
+    const keys = await redis.keys('products:list:*');
+    if (keys.length) await redis.del(...keys);
+  } catch (_) {
+    // cache invalidation failure is non-fatal, ttl will eventually expire entries
+  }
+}
+
 // prometheus metrics registry, scoped to this service
 const metricsRegister = new promClient.Registry();
 // adds default node.js process metrics (cpu, memory, event loop)
@@ -183,6 +196,9 @@ app.post('/api/products', validate(productSchema), async (req, res) => {
       gallery
     });
 
+    // new product changes the catalog, drop all cached list variants
+    await invalidateProductsCache();
+
     res.status(201).json({
       id: createdProductId,
       message: 'product created in both databases'
@@ -263,6 +279,9 @@ app.put('/api/products/:id', async (req, res) => {
     if (Array.isArray(gallery) && gallery.length > 0) catalogPayload.gallery = gallery;
     await axios.put(`${CATALOG_SERVICE}/internal/product-details/${id}`, catalogPayload);
 
+    // product mutation: drop cached list variants
+    await invalidateProductsCache();
+
     res.json({ id, message: 'product updated in both databases' });
   } catch (e) {
     handleError(res, e, 'product_update_failed');
@@ -284,7 +303,10 @@ app.patch('/api/products/:id/price', async (req, res) => {
   try {
     // forward patch request to inventory service
     const r = await axios.patch(`${INVENTORY_SERVICE}/products/${req.params.id}/price`, req.body);
-    
+
+    // price change must be reflected by the next list read
+    await invalidateProductsCache();
+
     res.json(r.data);
   } catch (e) {
     handleError(res, e, 'price_update_failed');
@@ -426,9 +448,12 @@ app.post('/api/checkout', validate(checkoutSchema), async (req, res) => {
   try {
     // executes postgres transaction to create order and reduce stock
     const pgRes = await axios.post(`${INVENTORY_SERVICE}/checkout`, { userId, items });
-    
+
     // extract order id from inventory service response
     orderId = pgRes.data.orderId;
+
+    // stock was reduced, cached list payloads are now stale
+    await invalidateProductsCache();
 
     res.status(201).json({ success: true, orderId });
 
@@ -523,9 +548,14 @@ app.get('/api/users/:userId/orders', async (req, res) => {
 // cancel an order and restore its stock
 app.post('/api/orders/:orderId/cancel', async (req, res) => {
   // delegate cancellation to inventory service to handle stock logic
-  axios.post(`${INVENTORY_SERVICE}/orders/${req.params.orderId}/cancel`)
-    .then(() => res.sendStatus(200))
-    .catch(e => handleError(res, e));
+  try {
+    await axios.post(`${INVENTORY_SERVICE}/orders/${req.params.orderId}/cancel`);
+    // stock was restored, cached list payloads are now stale
+    await invalidateProductsCache();
+    res.sendStatus(200);
+  } catch (e) {
+    handleError(res, e);
+  }
 });
 
 // aggregate product data from postgres and mongodb
@@ -590,6 +620,9 @@ app.delete('/api/products/:id', async (req, res) => {
 
     // silently ignore catalog delete failure — product detail data is orphaned but not critical
     await axios.delete(`${CATALOG_SERVICE}/internal/product-details/${req.params.id}`).catch(() => {});
+
+    // product removed: drop cached list variants
+    await invalidateProductsCache();
 
     res.sendStatus(204);
   } catch (e) {
