@@ -1,0 +1,99 @@
+# every service below is ClusterIP. nothing here is exposed outside the cluster.
+# external traffic enters only through the Ingress (see 50-ingress.yaml).
+# this is what proves the "internal traffic via Service, external via Ingress" requirement.
+
+# headless service required by the postgres statefulset for stable per-pod dns
+# (postgres-0.postgres.aura.svc.cluster.local)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: aura
+spec:
+  # clusterIP: None makes it a headless service (no virtual ip, dns returns pod ip directly)
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+# headless service for the mongodb statefulset, same pattern as postgres
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: aura
+spec:
+  clusterIP: None
+  selector:
+    app: mongodb
+  ports:
+  - port: 27017
+    targetPort: 27017
+---
+# regular ClusterIP service for the redis cache deployment
+# api-gateway resolves "redis" through cluster dns
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: aura
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+# pg-service: load-balances requests from api-gateway across the 2 deployment replicas
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-service
+  namespace: aura
+spec:
+  selector:
+    app: pg-service
+  ports:
+  - port: 3001
+    targetPort: 3001
+---
+# mongo-service: load-balances requests from api-gateway across the 2 deployment replicas
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-service
+  namespace: aura
+spec:
+  selector:
+    app: mongo-service
+  ports:
+  - port: 3002
+    targetPort: 3002
+---
+# api-gateway service: receives traffic from the ingress controller
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: aura
+spec:
+  selector:
+    app: api-gateway
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+# frontend service: receives traffic from the ingress controller
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: aura
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 8080
+    targetPort: 8080
