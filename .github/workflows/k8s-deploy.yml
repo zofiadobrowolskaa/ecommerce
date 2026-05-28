@@ -15,7 +15,8 @@ jobs:
 
     steps:
       # checkout the repo at the commit that triggered the run
-      - uses: actions/checkout@v4
+      # v5 runs on node 24 (v4 is being deprecated by github actions)
+      - uses: actions/checkout@v5
 
       # spin up a single-node kind cluster named "aura"
       - name: Create kind cluster

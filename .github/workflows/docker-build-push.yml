@@ -34,7 +34,8 @@ jobs:
 
     steps:
       # checkout the repo at the commit that triggered the upstream workflow_run
-      - uses: actions/checkout@v4
+      # v5 runs on node 24 (v4 is being deprecated by github actions)
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
