@@ -1,5 +1,6 @@
 const express = require('express');
-const { connectMongo, getDb } = require('./db/mongoClient');
+const promClient = require('prom-client');
+const { connectMongo, getDb, client: mongoNativeClient } = require('./db/mongoClient');
 const connectMongoose = require('./db/mongoose');
 const ProductDetail = require('./models/ProductDetail');
 const Review = require('./models/Review');
@@ -8,13 +9,57 @@ const mongoErrorMap = require('./middleware/mongoErrorMiddleware');
 const app = express();
 app.use(express.json());
 
+// prometheus metrics registry, scoped to this service
+const metricsRegister = new promClient.Registry();
+// adds default node.js process metrics (cpu, memory, event loop)
+promClient.collectDefaultMetrics({ register: metricsRegister, prefix: 'mongo_service_' });
+
+// counter incremented on every finished http request
+const httpRequestsTotal = new promClient.Counter({
+  name: 'mongo_service_http_requests_total',
+  help: 'total http requests handled by the mongo-service',
+  labelNames: ['method', 'route', 'status'],
+  registers: [metricsRegister]
+});
+
+// middleware capturing request metrics after the response is sent
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    httpRequestsTotal.inc({
+      method: req.method,
+      route: req.route?.path || req.path,
+      status: res.statusCode
+    });
+  });
+  next();
+});
+
 // unified error response helper: every failure responds with { error, code, details }
 const sendError = (res, status, error, details) =>
   res.status(status).json({ error, code: status, details: details ?? null });
 
-// simple healthcheck endpoint
+// liveness probe: confirms the node.js process is alive
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'catalog-analytics-service' });
+});
+
+// readiness probe: confirms the mongodb connection is usable
+// kubernetes will not route traffic until ping succeeds
+app.get('/ready', async (req, res) => {
+  try {
+    // admin ping verifies the connection without touching app data
+    await mongoNativeClient.db('admin').command({ ping: 1 });
+    res.status(200).json({ ready: true });
+  } catch (e) {
+    // 503 makes the pod NotReady from kubernetes' point of view
+    res.status(503).json({ ready: false, reason: e.message });
+  }
+});
+
+// prometheus scrape endpoint, returns the registry in text format
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', metricsRegister.contentType);
+  res.end(await metricsRegister.metrics());
 });
 
 // handles wishlist operations using native mongodb driver
