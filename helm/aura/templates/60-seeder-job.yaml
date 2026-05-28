@@ -1,0 +1,41 @@
+# seeder job; uses helm hook so it runs after install/upgrade and is recreated on each upgrade
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seeder
+  namespace: {{ .Values.namespace }}
+  annotations:
+    # helm hook orchestration: run post-install + post-upgrade, delete the old job on upgrade
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-gateway
+        image: curlimages/curl:8.10.1
+        command:
+        - sh
+        - -c
+        - |
+          until curl -fsS http://api-gateway:3000/health; do
+            echo "waiting for api-gateway..."
+            sleep 2
+          done
+      containers:
+      - name: seeder
+        # reuses the api-gateway image; seed-products.js + products.json are bundled there
+        image: {{ include "aura.image" (dict "service" "api-gateway" "root" .) }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["node", "seed-products.js"]
+        env:
+        - name: SEED_GATEWAY_URL
+          value: "http://api-gateway:3000"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 100
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]

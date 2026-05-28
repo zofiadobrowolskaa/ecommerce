@@ -1,0 +1,66 @@
+# api-gateway deployment; the "backend" referenced by replicas, PDB and rolling update rules
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: {{ .Values.namespace }}
+spec:
+  # gateway replicas come from values.gateway.replicas (2 dev, 3 prod)
+  replicas: {{ .Values.gateway.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        fsGroup: 101
+      containers:
+      - name: api-gateway
+        image: {{ include "aura.image" (dict "service" "api-gateway" "root" .) }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: 3000
+        env:
+        - name: PORT
+          value: "3000"
+        - name: INVENTORY_SERVICE_URL
+          valueFrom: { configMapKeyRef: { name: aura-config, key: INVENTORY_SERVICE_URL } }
+        - name: CATALOG_SERVICE_URL
+          valueFrom: { configMapKeyRef: { name: aura-config, key: CATALOG_SERVICE_URL } }
+        - name: REDIS_HOST
+          valueFrom: { configMapKeyRef: { name: aura-config, key: REDIS_HOST } }
+        - name: REDIS_PORT
+          valueFrom: { configMapKeyRef: { name: aura-config, key: REDIS_PORT } }
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.gateway.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: ["ALL"]

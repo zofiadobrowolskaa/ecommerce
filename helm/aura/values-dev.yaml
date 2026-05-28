@@ -1,0 +1,4 @@
+# explicit dev overlay; identical to values.yaml defaults but kept so the
+# install command always passes -f <env file> for clarity
+environment: dev
+# everything else inherits from values.yaml

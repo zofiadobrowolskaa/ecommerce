@@ -1,0 +1,7 @@
+# patterns helm should skip when packaging the chart
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.tmp
+*.bak
