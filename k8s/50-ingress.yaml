@@ -1,0 +1,67 @@
+# single ingress that routes external traffic to the api-gateway and frontend services.
+# postgres, mongodb, redis, pg-service and mongo-service are intentionally NOT here.
+# that absence is what proves the database/cache/internal-tier isolation requirement.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aura-ingress
+  namespace: aura
+  annotations:
+    # we do not strip the path; backends rely on the original /api/... prefix
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  # binds this resource to the nginx ingress controller installed in the kind cluster
+  ingressClassName: nginx
+  rules:
+  # virtual host; map this name to 127.0.0.1 in /etc/hosts for local kind testing
+  - host: aura.local
+    http:
+      paths:
+      # public api surface goes to the gateway
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 3000
+      # interactive openapi/swagger documentation
+      - path: /api-docs
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 3000
+      # liveness endpoint exposed for smoke tests after deploy
+      - path: /health
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 3000
+      # readiness endpoint exposed for smoke tests after deploy
+      - path: /ready
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 3000
+      # prometheus scrape endpoint exposed so external observability stacks can pull metrics
+      - path: /metrics
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 3000
+      # everything else falls through to the spa, which uses client-side routing
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 8080
