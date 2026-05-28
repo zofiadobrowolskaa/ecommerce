@@ -1,0 +1,53 @@
+# redis runs as a regular deployment (not statefulset) because it is used as a cache,
+# not a system of record. losing cached data on pod restart is acceptable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: aura
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      # drop root for the redis process
+      securityContext:
+        runAsNonRoot: true
+        # redis:7-alpine ships with a "redis" user at uid 999
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        # readiness probe: redis-cli ping must answer PONG before the pod gets traffic
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        # liveness probe: same check on a longer cadence, kubelet restarts on failure
+        livenessProbe:
+          exec:
+            command: ["redis-cli", "ping"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        # tight resources, redis is small and stateless here
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        # container-level hardening: forbid privilege escalation and drop all linux capabilities
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
