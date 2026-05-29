@@ -596,9 +596,7 @@ Redis service is internal (`kubectl -n aura get svc redis` → ClusterIP, not in
 
 Last successful run of the K8s Deploy workflow on `main`:
 
-👉 **https://github.com/zofiadobrowolskaa/ecommerce/actions**
-
-Look for the latest green run of `K8s Deploy (kind)`. It performs the same steps as §1 of this document, end-to-end, in CI.
+👉 **https://github.com/zofiadobrowolskaa/ecommerce/actions/runs/26601375347**
 
 ---
 
