@@ -34,10 +34,11 @@ spec:
           valueFrom: { configMapKeyRef: { name: aura-config, key: MONGO_INITDB_ROOT_USERNAME } }
         - name: MONGO_INITDB_ROOT_PASSWORD
           valueFrom: { secretKeyRef: { name: aura-secret, key: MONGO_PASSWORD } }
-        # tcpSocket probes used because the mongosh exec probe regularly hits
-        # the 5s timeout on resource-constrained nodes (mongosh has a heavy
-        # node.js startup). mongo opens the listening port only once it is ready
-        # to accept commands, so an open tcp socket is a reliable readiness signal.
+        # tcpSocket probes (instead of mongosh exec) because the mongosh node.js
+        # startup regularly takes longer than the 5s exec timeout on small nodes.
+        # mongo opens its listening port only once it is ready to accept commands,
+        # so an open tcp socket is a reliable readiness signal.
+        # readiness: pod gets traffic when the port is open (does not restart on failure).
         readinessProbe:
           tcpSocket:
             port: 27017
@@ -45,6 +46,7 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 2
           failureThreshold: 3
+        # liveness: kubelet restarts the container if the port stops accepting connections.
         livenessProbe:
           tcpSocket:
             port: 27017

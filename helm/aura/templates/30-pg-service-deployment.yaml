@@ -52,19 +52,23 @@ spec:
           value: "3001"
         - name: DATABASE_URL
           valueFrom: { secretKeyRef: { name: aura-secret, key: DATABASE_URL } }
+        # readiness: when /ready returns non-200, kubernetes pulls the pod out of the
+        # service load balancer (but does NOT restart it). /ready runs `SELECT 1` on postgres.
         readinessProbe:
           httpGet:
             path: /ready
             port: 3001
           initialDelaySeconds: 5
           periodSeconds: 5
+        # liveness: when /health stops responding, kubelet restarts the container.
         livenessProbe:
           httpGet:
             path: /health
             port: 3001
           initialDelaySeconds: 20
           periodSeconds: 10
-        # resources merged from values.pgService.resources (dev vs prod sizing)
+        # requests = guaranteed minimum reservation; limits = hard cap (cpu throttle / oom-kill).
+        # values merged from values.pgService.resources (dev vs prod sizing).
         resources:
           {{- toYaml .Values.pgService.resources | nindent 10 }}
         securityContext:

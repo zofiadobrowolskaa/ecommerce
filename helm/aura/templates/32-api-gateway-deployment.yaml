@@ -48,18 +48,24 @@ spec:
           valueFrom: { configMapKeyRef: { name: aura-config, key: REDIS_HOST } }
         - name: REDIS_PORT
           valueFrom: { configMapKeyRef: { name: aura-config, key: REDIS_PORT } }
+        # readiness: when /ready returns non-200, kubernetes pulls the pod out of the
+        # service load balancer (but does NOT restart it). /ready pings downstream services.
         readinessProbe:
           httpGet:
             path: /ready
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 5
+        # liveness: when /health stops responding, kubelet restarts the container.
+        # /health is a cheap "process is alive" check.
         livenessProbe:
           httpGet:
             path: /health
             port: 3000
           initialDelaySeconds: 15
           periodSeconds: 10
+        # requests = minimum guaranteed cpu/memory the scheduler reserves on the node.
+        # limits  = hard cap; container is throttled (cpu) or oom-killed (memory) if exceeded.
         resources:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
         securityContext:

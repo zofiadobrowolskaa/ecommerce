@@ -32,6 +32,8 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - containerPort: 8080
+        # readiness/liveness: both hit the static /health endpoint that nginx serves
+        # from the config file. cheap and reliable for a stateless static-content server.
         readinessProbe:
           httpGet:
             path: /health
@@ -44,6 +46,7 @@ spec:
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
+        # requests = guaranteed minimum reservation; limits = hard cap (cpu throttle / oom-kill).
         resources:
           {{- toYaml .Values.frontend.resources | nindent 10 }}
         securityContext:

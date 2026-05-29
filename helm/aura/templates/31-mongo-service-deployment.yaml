@@ -41,18 +41,22 @@ spec:
           value: "3002"
         - name: MONGO_URI
           valueFrom: { secretKeyRef: { name: aura-secret, key: MONGO_URI } }
+        # readiness: when /ready returns non-200, kubernetes pulls the pod out of the
+        # service load balancer (but does NOT restart it). /ready pings the mongo admin db.
         readinessProbe:
           httpGet:
             path: /ready
             port: 3002
           initialDelaySeconds: 5
           periodSeconds: 5
+        # liveness: when /health stops responding, kubelet restarts the container.
         livenessProbe:
           httpGet:
             path: /health
             port: 3002
           initialDelaySeconds: 20
           periodSeconds: 10
+        # requests = guaranteed minimum reservation; limits = hard cap (cpu throttle / oom-kill).
         resources:
           {{- toYaml .Values.mongoService.resources | nindent 10 }}
         securityContext:

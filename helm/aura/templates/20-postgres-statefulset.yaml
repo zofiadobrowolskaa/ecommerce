@@ -40,11 +40,14 @@ spec:
         # because the root of the pvc has a lost+found dir that postgres treats as non-empty
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
+        # readiness: pg_isready confirms postgres accepts connections.
+        # if it fails, kubernetes stops sending queries here (does not restart).
         readinessProbe:
           exec:
             command: ["pg_isready", "-U", "user", "-d", "ecommerce_db"]
           initialDelaySeconds: 5
           periodSeconds: 5
+        # liveness: same check on a longer cadence; failure triggers a container restart.
         livenessProbe:
           exec:
             command: ["pg_isready", "-U", "user", "-d", "ecommerce_db"]
