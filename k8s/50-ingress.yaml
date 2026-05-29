@@ -6,9 +6,9 @@ kind: Ingress
 metadata:
   name: aura-ingress
   namespace: aura
-  annotations:
-    # we do not strip the path; backends rely on the original /api/... prefix
-    nginx.ingress.kubernetes.io/rewrite-target: /
+  # no rewrite-target annotation on purpose: the backend services (api-gateway, frontend)
+  # expect the original url path. for example api-gateway routes on /api/products,
+  # /health, /ready, /metrics — rewriting everything to "/" would 404 those routes.
 spec:
   # binds this resource to the nginx ingress controller installed in the kind cluster
   ingressClassName: nginx
