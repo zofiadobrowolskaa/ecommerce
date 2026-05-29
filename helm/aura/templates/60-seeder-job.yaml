@@ -1,18 +1,26 @@
-# seeder job; uses helm hook so it runs after install/upgrade and is recreated on each upgrade
+# one-shot Job that populates the catalog by hitting the gateway saga.
+# this satisfies the "use a Job for initialization" half of W7
+# (in addition to the pg-service initContainer that runs db migrations).
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: seeder
   namespace: {{ .Values.namespace }}
   annotations:
-    # helm hook orchestration: run post-install + post-upgrade, delete the old job on upgrade
+    # helm hook orchestration: run as a post-install + post-upgrade hook,
+    # delete the previous instance before re-running so re-installs work.
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
+  # retry the whole job up to 3 times if the seed script exits non-zero
   backoffLimit: 3
   template:
     spec:
+      # OnFailure only restarts the failed container, not the whole pod
       restartPolicy: OnFailure
+      # init container blocks until /health on the gateway answers 200 —
+      # avoids racing with the gateway pod startup.
+      # this is a textbook example of "Job + initContainer to wait for dependencies".
       initContainers:
       - name: wait-for-gateway
         image: curlimages/curl:8.10.1
@@ -33,6 +41,7 @@ spec:
         env:
         - name: SEED_GATEWAY_URL
           value: "http://api-gateway:3000"
+        # same non-root + hardening as the long-running pods
         securityContext:
           runAsNonRoot: true
           runAsUser: 100

@@ -27,6 +27,8 @@ spec:
         prometheus.io/port: "3000"
         prometheus.io/path: "/metrics"
     spec:
+      # pod-level security context: drop root for every container in this pod.
+      # uid 100 matches the "app" user we create in the api-gateway Dockerfile.
       securityContext:
         runAsNonRoot: true
         runAsUser: 100
@@ -68,6 +70,7 @@ spec:
         # limits  = hard cap; container is throttled (cpu) or oom-killed (memory) if exceeded.
         resources:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
+        # container-level hardening: no setuid escape, no linux capabilities
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false

@@ -22,6 +22,8 @@ spec:
       labels:
         app: frontend
     spec:
+      # pod-level security context: drop root for the nginx worker.
+      # uid 101 is the nginx user baked into the nginxinc/nginx-unprivileged image.
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
@@ -49,6 +51,8 @@ spec:
         # requests = guaranteed minimum reservation; limits = hard cap (cpu throttle / oom-kill).
         resources:
           {{- toYaml .Values.frontend.resources | nindent 10 }}
+        # container-level hardening: no setuid escape, no linux capabilities.
+        # readOnlyRootFilesystem stays false because nginx writes pid/cache files to /tmp.
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false

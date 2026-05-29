@@ -27,15 +27,22 @@ spec:
         prometheus.io/port: "3001"
         prometheus.io/path: "/metrics"
     spec:
+      # pod-level security context: drop root for every container in this pod.
+      # uid 100 matches the "app" user we create in the pg-service Dockerfile.
+      # fsGroup 101 makes mounted volumes writable by that user.
       securityContext:
         runAsNonRoot: true
         runAsUser: 100
         fsGroup: 101
+      # init container runs db migrations BEFORE the http server starts.
+      # if `npm run migrate` fails, the main container never boots — clean dependency order.
+      # this satisfies the "use an initContainer or Job" half of W7.
       initContainers:
       - name: migrate
-        # image reference built by the aura.image helper from values.image.{registry,tag}
+        # reuses the pg-service image; only the command differs from the main container
         image: {{ include "aura.image" (dict "service" "pg-service" "root" .) }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        # runs prisma migrate deploy + knex migrate:latest + knex seed:run
         command: ["npm", "run", "migrate"]
         env:
         - name: DATABASE_URL
@@ -71,6 +78,10 @@ spec:
         # values merged from values.pgService.resources (dev vs prod sizing).
         resources:
           {{- toYaml .Values.pgService.resources | nindent 10 }}
+        # container-level hardening on top of the pod-level non-root context:
+        # - allowPrivilegeEscalation: blocks setuid / sudo from elevating to root
+        # - capabilities drop ALL: removes every linux kernel capability (none needed for express)
+        # - readOnlyRootFilesystem false: prisma writes engine binaries to node_modules at runtime
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false

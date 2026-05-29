@@ -26,6 +26,8 @@ spec:
         prometheus.io/port: "3002"
         prometheus.io/path: "/metrics"
     spec:
+      # pod-level security context: drop root for every container in this pod.
+      # uid 100 matches the "app" user we create in the mongo-service Dockerfile.
       securityContext:
         runAsNonRoot: true
         runAsUser: 100
@@ -59,6 +61,7 @@ spec:
         # requests = guaranteed minimum reservation; limits = hard cap (cpu throttle / oom-kill).
         resources:
           {{- toYaml .Values.mongoService.resources | nindent 10 }}
+        # container-level hardening: no setuid escape, no linux capabilities
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
