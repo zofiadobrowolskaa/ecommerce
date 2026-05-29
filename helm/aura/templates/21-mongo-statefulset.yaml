@@ -1,11 +1,16 @@
-# mongodb statefulset, storage size parameterized for per-env tuning
+# mongodb runs as a statefulset (not a deployment) so the pod keeps the same
+# identity (mongodb-0) and the same persistent volume across restarts.
+# storage size is parameterized so dev and prod can request different capacity.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: mongodb
   namespace: {{ .Values.namespace }}
 spec:
+  # binds this statefulset to the headless service of the same name so each pod
+  # gets a stable dns address (mongodb-0.mongodb.aura.svc.cluster.local)
   serviceName: mongodb
+  # 1 replica is intentional: this project does not run a replica set
   replicas: 1
   selector:
     matchLabels:
@@ -29,10 +34,11 @@ spec:
           valueFrom: { configMapKeyRef: { name: aura-config, key: MONGO_INITDB_ROOT_USERNAME } }
         - name: MONGO_INITDB_ROOT_PASSWORD
           valueFrom: { secretKeyRef: { name: aura-secret, key: MONGO_PASSWORD } }
-        # tcpSocket probes used because the mongosh exec probe regularly hits
-        # the 5s timeout on resource-constrained nodes (mongosh has a heavy
-        # node.js startup). mongo opens the listening port only once it is ready
-        # to accept commands, so an open tcp socket is a reliable readiness signal.
+        # tcpSocket probes (instead of mongosh exec) because the mongosh node.js
+        # startup regularly takes longer than the 5s exec timeout on small nodes.
+        # mongo opens its listening port only once it is ready to accept commands,
+        # so an open tcp socket is a reliable readiness signal.
+        # readiness: pod gets traffic when the port is open (does not restart on failure).
         readinessProbe:
           tcpSocket:
             port: 27017
@@ -40,6 +46,7 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 2
           failureThreshold: 3
+        # liveness: kubelet restarts the container if the port stops accepting connections.
         livenessProbe:
           tcpSocket:
             port: 27017
@@ -54,13 +61,19 @@ spec:
           limits:
             cpu: "500m"
             memory: "512Mi"
+        # mounts the persistent volume into the standard mongo data directory
+        # all collections + indexes live here and survive pod restarts
         volumeMounts:
         - name: data
           mountPath: /data/db
+  # volumeClaimTemplates is the heart of statefulset persistence:
+  # kubernetes creates ONE persistentvolumeclaim per replica (data-mongodb-0)
+  # and re-attaches the SAME pvc to the pod after a restart, so data survives.
   volumeClaimTemplates:
   - metadata:
       name: data
     spec:
+      # ReadWriteOnce: only one node mounts the volume at a time (mongo is single-writer here)
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:

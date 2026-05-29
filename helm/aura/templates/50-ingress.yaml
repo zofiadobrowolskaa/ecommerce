@@ -4,8 +4,9 @@ kind: Ingress
 metadata:
   name: aura-ingress
   namespace: {{ .Values.namespace }}
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+  # no rewrite-target annotation on purpose: the backend services (api-gateway, frontend)
+  # expect the original url path. for example api-gateway routes on /api/products,
+  # /health, /ready, /metrics — rewriting everything to "/" would 404 those routes.
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:

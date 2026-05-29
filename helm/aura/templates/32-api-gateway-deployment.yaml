@@ -7,6 +7,9 @@ metadata:
 spec:
   # gateway replicas come from values.gateway.replicas (2 dev, 3 prod)
   replicas: {{ .Values.gateway.replicas }}
+  # rolling update: replace pods one by one to avoid downtime during an upgrade.
+  # maxSurge=1: kubernetes can run 1 extra pod above the desired count while rolling.
+  # maxUnavailable=0: never drop below the desired count, so traffic always has a healthy pod.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -24,6 +27,8 @@ spec:
         prometheus.io/port: "3000"
         prometheus.io/path: "/metrics"
     spec:
+      # pod-level security context: drop root for every container in this pod.
+      # uid 100 matches the "app" user we create in the api-gateway Dockerfile.
       securityContext:
         runAsNonRoot: true
         runAsUser: 100
@@ -45,20 +50,27 @@ spec:
           valueFrom: { configMapKeyRef: { name: aura-config, key: REDIS_HOST } }
         - name: REDIS_PORT
           valueFrom: { configMapKeyRef: { name: aura-config, key: REDIS_PORT } }
+        # readiness: when /ready returns non-200, kubernetes pulls the pod out of the
+        # service load balancer (but does NOT restart it). /ready pings downstream services.
         readinessProbe:
           httpGet:
             path: /ready
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 5
+        # liveness: when /health stops responding, kubelet restarts the container.
+        # /health is a cheap "process is alive" check.
         livenessProbe:
           httpGet:
             path: /health
             port: 3000
           initialDelaySeconds: 15
           periodSeconds: 10
+        # requests = minimum guaranteed cpu/memory the scheduler reserves on the node.
+        # limits  = hard cap; container is throttled (cpu) or oom-killed (memory) if exceeded.
         resources:
           {{- toYaml .Values.gateway.resources | nindent 10 }}
+        # container-level hardening: no setuid escape, no linux capabilities
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false

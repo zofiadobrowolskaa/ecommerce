@@ -1,9 +1,11 @@
-# isolated ci test environment
+# end-to-end critical path tests covering the database/saga layer.
+# this workflow is the "tests or basic validation".
+# success on main triggers the docker-build-push workflow via workflow_run chain.
 name: E2E Critical Path Tests
 
 on:
   push:
-    branches: [ "main", "feature/security-docs-tests" ] 
+    branches: [ "main", "feature/security-docs-tests" ]
   pull_request:
     branches: [ "main" ]
 
@@ -12,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    # v5 runs on node 24 (v3/v4 are being deprecated by github actions)
+    - uses: actions/checkout@v5
 
     # step 1: generate a complete .env file for CI
     # providing necessary env vars for orchestration and security

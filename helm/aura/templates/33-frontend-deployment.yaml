@@ -6,6 +6,9 @@ metadata:
   namespace: {{ .Values.namespace }}
 spec:
   replicas: {{ .Values.frontend.replicas }}
+  # rolling update: replace pods one by one to avoid downtime during an upgrade.
+  # maxSurge=1: kubernetes can run 1 extra pod above the desired count while rolling.
+  # maxUnavailable=0: never drop below the desired count, so traffic always has a healthy pod.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -19,6 +22,8 @@ spec:
       labels:
         app: frontend
     spec:
+      # pod-level security context: drop root for the nginx worker.
+      # uid 101 is the nginx user baked into the nginxinc/nginx-unprivileged image.
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
@@ -29,6 +34,8 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - containerPort: 8080
+        # readiness/liveness: both hit the static /health endpoint that nginx serves
+        # from the config file. cheap and reliable for a stateless static-content server.
         readinessProbe:
           httpGet:
             path: /health
@@ -41,8 +48,11 @@ spec:
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
+        # requests = guaranteed minimum reservation; limits = hard cap (cpu throttle / oom-kill).
         resources:
           {{- toYaml .Values.frontend.resources | nindent 10 }}
+        # container-level hardening: no setuid escape, no linux capabilities.
+        # readOnlyRootFilesystem stays false because nginx writes pid/cache files to /tmp.
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false

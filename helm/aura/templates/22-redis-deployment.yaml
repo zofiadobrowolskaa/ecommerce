@@ -23,11 +23,13 @@ spec:
         image: redis:7-alpine
         ports:
         - containerPort: 6379
+        # readiness: redis-cli ping must answer PONG before the pod gets traffic
         readinessProbe:
           exec:
             command: ["redis-cli", "ping"]
           initialDelaySeconds: 3
           periodSeconds: 5
+        # liveness: same check on a longer cadence; failure triggers a container restart
         livenessProbe:
           exec:
             command: ["redis-cli", "ping"]

@@ -1,3 +1,6 @@
+# deploys the chart end-to-end against a fresh kind cluster and verifies the rollout.
+# this workflow is the "deploy via helm + verify rollout".
+# end-to-end: kind create -> build images -> kind load -> helm upgrade --install -> kubectl rollout status.
 name: K8s Deploy (kind)
 
 # triggers:

@@ -1,16 +1,23 @@
-# pdb for the public-facing tier and the inventory tier
-# minAvailable: 1 guarantees at least one pod stays during voluntary disruptions
+# pod disruption budgets protect minimum availability during VOLUNTARY disruptions
+# (kubectl drain, cluster autoscaler scale-down, rolling node upgrades).
+# they do NOT protect against involuntary disruptions (node crash, oom-kill).
+# with replicas: 2 and minAvailable: 1, the eviction api will block any request
+# that would drop the deployment below 1 healthy replica.
+
+# protects the public-facing api gateway during node maintenance
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: api-gateway-pdb
   namespace: {{ .Values.namespace }}
 spec:
+  # always keep at least 1 healthy pod even if someone is draining nodes
   minAvailable: 1
   selector:
     matchLabels:
       app: api-gateway
 ---
+# protects the inventory/checkout tier (pg-service handles orders + stock)
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
