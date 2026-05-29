@@ -2,6 +2,8 @@
 
 A comprehensive, feature-rich e-commerce platform for luxury jewellery. The project consists of a modern Single Page Application (React) and a highly robust, microservices-based backend utilizing a Polyglot Persistence architecture (PostgreSQL + MongoDB).
 
+> **☁️ Cloud Technologies project (Kubernetes):** see [`CHECKLIST.md`](CHECKLIST.md) for the verification guide, the requirement coverage table, and a walk-through of the Helm-based deploy on `kind`. Implementation lives in [`k8s/`](k8s/), [`helm/aura/`](helm/aura/), and [`.github/workflows/`](.github/workflows/).
+
 ---
 
 # 🏗️ Part 1: Backend Architecture & Database Design
