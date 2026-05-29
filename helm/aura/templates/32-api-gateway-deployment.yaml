@@ -7,6 +7,9 @@ metadata:
 spec:
   # gateway replicas come from values.gateway.replicas (2 dev, 3 prod)
   replicas: {{ .Values.gateway.replicas }}
+  # rolling update: replace pods one by one to avoid downtime during an upgrade.
+  # maxSurge=1: kubernetes can run 1 extra pod above the desired count while rolling.
+  # maxUnavailable=0: never drop below the desired count, so traffic always has a healthy pod.
   strategy:
     type: RollingUpdate
     rollingUpdate:
