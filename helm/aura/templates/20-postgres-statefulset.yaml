@@ -1,11 +1,16 @@
-# postgres statefulset, storage size parameterized for per-env tuning
+# postgres runs as a statefulset (not a deployment) so the pod keeps the same
+# identity (postgres-0) and the same persistent volume across restarts.
+# storage size is parameterized so dev and prod can request different capacity.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
   namespace: {{ .Values.namespace }}
 spec:
+  # binds this statefulset to the headless service of the same name so each pod
+  # gets a stable dns address (postgres-0.postgres.aura.svc.cluster.local)
   serviceName: postgres
+  # 1 replica is intentional: single-writer database, no built-in replication
   replicas: 1
   selector:
     matchLabels:
@@ -31,6 +36,8 @@ spec:
           valueFrom: { configMapKeyRef: { name: aura-config, key: POSTGRES_USER } }
         - name: POSTGRES_PASSWORD
           valueFrom: { secretKeyRef: { name: aura-secret, key: POSTGRES_PASSWORD } }
+        # pgdata must live in a subdirectory of the mount, otherwise initdb fails
+        # because the root of the pvc has a lost+found dir that postgres treats as non-empty
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
         readinessProbe:
@@ -50,13 +57,19 @@ spec:
           limits:
             cpu: "500m"
             memory: "512Mi"
+        # mounts the persistent volume into the standard postgres data directory
+        # all database files live here and survive pod restarts
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
+  # volumeClaimTemplates is the heart of statefulset persistence:
+  # kubernetes creates ONE persistentvolumeclaim per replica (data-postgres-0)
+  # and re-attaches the SAME pvc to the pod after a restart, so data survives.
   volumeClaimTemplates:
   - metadata:
       name: data
     spec:
+      # ReadWriteOnce: only one node mounts the volume at a time (postgres is single-writer)
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
