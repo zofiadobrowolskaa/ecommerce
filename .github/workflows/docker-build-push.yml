@@ -1,3 +1,6 @@
+# builds container images for all 4 services and pushes them to ghcr.io.
+# this workflow is the "build image + publish to registry".
+# trigger chain: e2e-tests succeeds on main -> this workflow runs -> images get :latest and :<sha> tags.
 name: Build and Push Images
 
 # triggers:
